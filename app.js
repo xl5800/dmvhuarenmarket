@@ -45,6 +45,9 @@ const fallbackImages = {
     "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?auto=format&fit=crop&w=1200&q=80",
 };
 
+const rentalCategories = ["Studio", "1B1B", "2B2B", "单间", "主卧", "Basement", "整租", "合租", "找室友"];
+const secondhandCategories = ["家具", "家电", "电子产品", "车辆", "母婴", "书籍", "生活用品", "搬家清仓", "其他"];
+
 const seedListings = [
   rentalSeed(
     "Rockville 主卧转租，近红线 Twinbrook",
@@ -128,10 +131,16 @@ const els = {
   rentalList: document.querySelector("#rentalList"),
   secondhandList: document.querySelector("#secondhandList"),
   postForm: document.querySelector("#postForm"),
+  categorySelect: document.querySelector("#categorySelect"),
+  imageFileInput: document.querySelector("#imageFileInput"),
+  imagePreviewGrid: document.querySelector("#imagePreviewGrid"),
+  postPreview: document.querySelector("#postPreview"),
   loginButton: document.querySelector("#loginButton"),
   loginDialog: document.querySelector("#loginDialog"),
   closeLoginDialog: document.querySelector("#closeLoginDialog"),
   loginForm: document.querySelector("#loginForm"),
+  registerButton: document.querySelector("#registerButton"),
+  forgotPasswordButton: document.querySelector("#forgotPasswordButton"),
   accountStatus: document.querySelector("#accountStatus"),
   accountList: document.querySelector("#accountList"),
   typeSelect: document.querySelector("#typeSelect"),
@@ -152,12 +161,15 @@ let currentUser = null;
 let currentProfile = null;
 let userLocation = null;
 let listings = [];
+let selectedImageFiles = [];
 
 init();
 
 async function init() {
   setupSupabase();
   renderAreaOptions();
+  updatePostTypeFields();
+  renderImagePreviews();
   bindEvents();
   updateLocationFromInput();
   await loadCurrentUser();
@@ -188,10 +200,16 @@ function bindEvents() {
   els.loginButton.addEventListener("click", handleLoginButton);
   els.useLocationButton.addEventListener("click", useBrowserLocation);
   els.seedButton.addEventListener("click", resetFallbackData);
+  els.registerButton.addEventListener("click", handleRegisterClick);
+  els.forgotPasswordButton.addEventListener("click", handleForgotPasswordClick);
+  els.typeSelect.addEventListener("change", updatePostTypeFields);
+  els.postForm.addEventListener("input", updatePostPreview);
+  els.imageFileInput.addEventListener("change", handleImageSelection);
 
   document.querySelectorAll("[data-post-type]").forEach((link) => {
     link.addEventListener("click", () => {
       els.typeSelect.value = link.dataset.postType;
+      updatePostTypeFields();
     });
   });
 
@@ -200,9 +218,17 @@ function bindEvents() {
 
   els.detailContent.addEventListener("click", (event) => {
     const map = event.target.closest("[data-map-id]");
-    if (!map) return;
-    const chooser = document.querySelector(`[data-map-chooser="${map.dataset.mapId}"]`);
-    chooser?.classList.toggle("is-open");
+    if (map) {
+      const chooser = document.querySelector(`[data-map-chooser="${map.dataset.mapId}"]`);
+      chooser?.classList.toggle("is-open");
+      return;
+    }
+
+    const copyButton = event.target.closest("[data-copy-contact]");
+    if (copyButton) {
+      navigator.clipboard?.writeText(copyButton.dataset.copyContact);
+      copyButton.textContent = "已复制";
+    }
   });
 }
 
@@ -212,6 +238,107 @@ function renderAreaOptions() {
     .filter((area) => area !== "全部地区")
     .map((area) => `<option value="${area}">${area}</option>`)
     .join("");
+}
+
+function updatePostTypeFields() {
+  const type = els.typeSelect.value;
+  const categories = type === "rental" ? rentalCategories : secondhandCategories;
+  els.categorySelect.innerHTML = categories
+    .map((category) => `<option value="${category}">${category}</option>`)
+    .join("");
+
+  document.querySelectorAll(".rental-only").forEach((field) => {
+    field.hidden = type !== "rental";
+  });
+  document.querySelectorAll(".secondhand-only").forEach((field) => {
+    field.hidden = type !== "secondhand";
+  });
+
+  const titleInput = els.postForm.elements.title;
+  const priceInput = els.postForm.elements.price;
+  const descriptionInput = els.postForm.elements.description;
+  if (type === "rental") {
+    titleInput.placeholder = "例如 Rockville 主卧转租，近红线地铁";
+    priceInput.placeholder = "月租，例如 1200";
+    descriptionInput.placeholder = "写清楚交通、室友、家具、看房方式和租期要求。";
+  } else {
+    titleInput.placeholder = "例如 搬家出 IKEA 书桌和办公椅";
+    priceInput.placeholder = "售价，例如 80";
+    descriptionInput.placeholder = "写清楚尺寸、新旧程度、取货方式、是否可议价。";
+  }
+
+  updatePostPreview();
+}
+
+function handleImageSelection() {
+  const incoming = Array.from(els.imageFileInput.files || []);
+  selectedImageFiles = [...selectedImageFiles, ...incoming].slice(0, 6);
+  if (incoming.length && selectedImageFiles.length === 6) {
+    alert("最多上传 6 张图片，第一张会作为封面。");
+  }
+  els.imageFileInput.value = "";
+  renderImagePreviews();
+  updatePostPreview();
+}
+
+function renderImagePreviews() {
+  if (!selectedImageFiles.length) {
+    els.imagePreviewGrid.innerHTML = `<div class="image-preview-empty">已选图片会显示在这里，第一张作为封面。</div>`;
+    return;
+  }
+
+  els.imagePreviewGrid.innerHTML = selectedImageFiles
+    .map(
+      (file, index) => `
+        <div class="image-preview-item">
+          <img src="${URL.createObjectURL(file)}" alt="上传预览 ${index + 1}" />
+          <span>${index === 0 ? "封面" : `图 ${index + 1}`}</span>
+          <button type="button" data-remove-image="${index}">删除</button>
+        </div>
+      `
+    )
+    .join("");
+
+  els.imagePreviewGrid.querySelectorAll("[data-remove-image]").forEach((button) => {
+    button.addEventListener("click", () => {
+      selectedImageFiles.splice(Number(button.dataset.removeImage), 1);
+      renderImagePreviews();
+      updatePostPreview();
+    });
+  });
+}
+
+function updatePostPreview() {
+  const data = new FormData(els.postForm);
+  const type = data.get("type");
+  const title = data.get("title")?.trim() || "标题预览";
+  const price = Number(data.get("price")) || 0;
+  const area = data.get("customArea")?.trim() || data.get("area") || "地区";
+  const category = data.get("category") || "分类";
+  const extra =
+    type === "rental"
+      ? [
+          data.get("moveIn") ? `入住 ${data.get("moveIn")}` : "",
+          data.get("furnished") ? "带家具" : "",
+          data.get("parking") ? "有停车" : "",
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      : [
+          data.get("condition"),
+          data.get("deliveryAvailable") ? "可送货" : "",
+          data.get("negotiable") ? "可议价" : "",
+        ]
+          .filter(Boolean)
+          .join(" · ");
+
+  els.postPreview.innerHTML = `
+    <strong>发布预览</strong>
+    <span>${type === "rental" ? "租房" : "二手"} · ${escapeHtml(area)} · ${escapeHtml(category)}</span>
+    <span>${escapeHtml(title)} ${price ? `· $${price.toLocaleString()}` : ""}</span>
+    ${extra ? `<span>${escapeHtml(extra)}</span>` : ""}
+    <span>${selectedImageFiles.length} 张图片</span>
+  `;
 }
 
 async function loadCurrentUser() {
@@ -251,6 +378,29 @@ async function loadListings() {
   }
 
   listings = normalizeListings((data || []).map(fromDbListing));
+  await attachListingImages();
+}
+
+async function attachListingImages() {
+  if (!onlineMode || !listings.length) return;
+  const ids = listings.map((item) => item.id);
+  const { data, error } = await db
+    .from("listing_images")
+    .select("listing_id, image_url, sort_order")
+    .in("listing_id", ids)
+    .order("sort_order", { ascending: true });
+  if (error) return;
+
+  const grouped = new Map();
+  for (const image of data || []) {
+    if (!grouped.has(image.listing_id)) grouped.set(image.listing_id, []);
+    grouped.get(image.listing_id).push(image.image_url);
+  }
+
+  listings = listings.map((item) => {
+    const images = grouped.get(item.id) || (item.image ? [item.image] : []);
+    return { ...item, images, image: images[0] || item.image };
+  });
 }
 
 function buildReadableListingFilter() {
@@ -326,6 +476,7 @@ function cardTemplate(item) {
           <span>${escapeHtml(item.area)}</span>
           <span>·</span>
           <span>${escapeHtml(item.category)}</span>
+          ${cardExtraMeta(item)}
           ${distance ? `<span>·</span><span>${distance}</span>` : ""}
         </div>
         <div class="price">$${Number(item.price).toLocaleString()}</div>
@@ -337,6 +488,18 @@ function cardTemplate(item) {
       </div>
     </article>
   `;
+}
+
+function cardExtraMeta(item) {
+  const meta =
+    item.type === "rental"
+      ? [item.moveIn ? `入住 ${item.moveIn}` : "", hasText(item.description, "带家具") ? "带家具" : ""]
+      : [extractCondition(item), hasText(item.description, "可送货") ? "可送货" : ""];
+
+  return meta
+    .filter(Boolean)
+    .map((value) => `<span>·</span><span>${escapeHtml(value)}</span>`)
+    .join("");
 }
 
 function showDetail(id) {
@@ -353,7 +516,7 @@ function showDetail(id) {
 
   els.detailContent.innerHTML = `
     <div class="detail-inner">
-      ${imageTemplate(item)}
+      ${galleryTemplate(item)}
       <p class="eyebrow">${item.type === "rental" ? "租房/转租" : "二手/清仓"}</p>
       <h2>${escapeHtml(item.title)}</h2>
       <div class="price">$${Number(item.price).toLocaleString()}</div>
@@ -362,6 +525,7 @@ function showDetail(id) {
       ${rentalExtra}
       <p><strong>附近：</strong>${escapeHtml(item.nearby || "未填写")}</p>
       <p><strong>更新时间：</strong>${timeAgo(item.updatedAt)}</p>
+      <div class="safety-note">交易提醒：不要提前转账押金或定金；租房请尽量实地/视频看房，二手交易建议当面验货。</div>
       <p>${escapeHtml(item.description)}</p>
       ${contactTemplate(item)}
     </div>
@@ -377,6 +541,18 @@ function imageTemplate(item) {
   return `<img src="${escapeHtml(image)}" alt="${escapeHtml(item.title)}" loading="lazy" />`;
 }
 
+function galleryTemplate(item) {
+  const images = item.images?.length ? item.images : [item.image || fallbackImages[item.type]];
+  return `
+    <div class="detail-gallery">
+      ${images
+        .slice(0, 6)
+        .map((image, index) => `<img src="${escapeHtml(image)}" alt="${escapeHtml(item.title)} 图片 ${index + 1}" loading="lazy" />`)
+        .join("")}
+    </div>
+  `;
+}
+
 function contactTemplate(item) {
   if (!currentUser) {
     return `
@@ -390,7 +566,9 @@ function contactTemplate(item) {
   return `
     <div class="contact-box">
       联系方式：${escapeHtml(item.contact)}
+      <button class="secondary-btn copy-contact-btn" type="button" data-copy-contact="${escapeHtml(item.contact)}">复制联系方式</button>
       <small>发布者：${escapeHtml(item.userName || "平台用户")}</small>
+      <small>邮箱已验证</small>
     </div>
   `;
 }
@@ -427,16 +605,8 @@ async function handleLoginSubmit(event) {
   const data = new FormData(els.loginForm);
   const email = data.get("email").trim().toLowerCase();
   const password = data.get("password");
-  const name = data.get("name").trim() || email.split("@")[0];
 
-  let result = await db.auth.signInWithPassword({ email, password });
-  if (result.error) {
-    result = await db.auth.signUp({
-      email,
-      password,
-      options: { data: { display_name: name } },
-    });
-  }
+  const result = await db.auth.signInWithPassword({ email, password });
 
   if (result.error) {
     alert(`登录失败：${getAuthErrorHelp(result.error.message)}`);
@@ -450,9 +620,74 @@ async function handleLoginSubmit(event) {
   els.loginForm.reset();
   render();
 
-  if (!result.data.session) {
-    alert("账号已创建。请先去邮箱完成确认，然后再登录。");
+}
+
+async function handleRegisterClick() {
+  if (!onlineMode) {
+    alert("当前没有连接 Supabase，暂时只能看本地演示。");
+    return;
   }
+
+  const data = new FormData(els.loginForm);
+  const email = data.get("email").trim().toLowerCase();
+  const password = data.get("password");
+  const name = data.get("name").trim() || email.split("@")[0];
+
+  if (!email || !password) {
+    alert("注册需要填写邮箱和密码。");
+    return;
+  }
+
+  const result = await db.auth.signUp({
+    email,
+    password,
+    options: {
+      data: { display_name: name },
+      emailRedirectTo: window.location.origin,
+    },
+  });
+
+  if (result.error) {
+    alert(`注册失败：${getAuthErrorHelp(result.error.message)}`);
+    return;
+  }
+
+  if (!result.data.session) {
+    alert("注册成功。请先去邮箱完成确认，然后再回来登录。");
+    return;
+  }
+
+  currentUser = result.data.user;
+  await loadProfile();
+  await loadListings();
+  els.loginDialog.close();
+  els.loginForm.reset();
+  render();
+}
+
+async function handleForgotPasswordClick() {
+  if (!onlineMode) {
+    alert("当前没有连接 Supabase，暂时只能看本地演示。");
+    return;
+  }
+
+  const data = new FormData(els.loginForm);
+  const email = data.get("email").trim().toLowerCase();
+  if (!email) {
+    alert("请先填写邮箱，再点击忘记密码。");
+    return;
+  }
+
+  const { error } = await db.auth.resetPasswordForEmail(email, {
+    redirectTo: window.location.origin,
+  });
+
+  if (error) {
+    alert(`发送失败：${getAuthErrorHelp(error.message)}`);
+    return;
+  }
+
+  alert("重置密码邮件已发送，请查看邮箱。");
 }
 
 async function handleLoginButton() {
@@ -481,27 +716,47 @@ async function handlePostSubmit(event) {
   const listing = listingFromForm(formData);
 
   if (onlineMode) {
-    const uploadedImageUrl = await uploadListingImage(formData.get("imageFile"));
-    if (uploadedImageUrl) listing.image = uploadedImageUrl;
-
-    const { error } = await db.from("listings").insert(toDbListing(listing));
+    const { data, error } = await db.from("listings").insert(toDbListing(listing)).select("id").single();
     if (error) {
       alert(`发布失败：${error.message}`);
       return;
     }
+    listing.id = data.id;
+
+    const uploadedImages = await uploadListingImages(selectedImageFiles, listing.id);
+    if (uploadedImages.length) {
+      listing.image = uploadedImages[0];
+      listing.images = uploadedImages;
+      await saveListingImages(listing.id, uploadedImages);
+      await db.from("listings").update({ image_url: uploadedImages[0] }).eq("id", listing.id);
+    }
+
     alert("已提交，等待管理员审核。");
     await loadListings();
   } else {
+    listing.images = selectedImageFiles.map((file) => URL.createObjectURL(file));
     listings.unshift(listing);
     saveFallbackListings(listings);
   }
 
   els.postForm.reset();
+  selectedImageFiles = [];
+  renderImagePreviews();
+  updatePostTypeFields();
   render();
   location.hash = "#account";
 }
 
-async function uploadListingImage(file) {
+async function uploadListingImages(files, listingId) {
+  const uploaded = [];
+  for (const file of files.slice(0, 6)) {
+    const url = await uploadOneListingImage(file, listingId);
+    if (url) uploaded.push(url);
+  }
+  return uploaded;
+}
+
+async function uploadOneListingImage(file, listingId) {
   if (!file || !file.size) return "";
   if (!file.type.startsWith("image/")) {
     alert("只能上传图片文件。");
@@ -516,7 +771,7 @@ async function uploadListingImage(file) {
 
   const extension = file.name.split(".").pop()?.toLowerCase() || "jpg";
   const safeExtension = extension.replace(/[^a-z0-9]/g, "") || "jpg";
-  const path = `${currentUser.id}/${Date.now()}-${createId()}.${safeExtension}`;
+  const path = `${currentUser.id}/${listingId}/${Date.now()}-${createId()}.${safeExtension}`;
   const { error } = await db.storage.from("listing-images").upload(path, file, {
     cacheControl: "3600",
     upsert: false,
@@ -531,34 +786,76 @@ async function uploadListingImage(file) {
   return data.publicUrl;
 }
 
+async function saveListingImages(listingId, imageUrls) {
+  const rows = imageUrls.map((url, index) => ({
+    listing_id: listingId,
+    image_url: url,
+    sort_order: index,
+  }));
+  const { error } = await db.from("listing_images").insert(rows);
+  if (error) {
+    alert(`图片记录保存失败：${error.message}`);
+  }
+}
+
 function listingFromForm(data) {
   const selectedArea = data.get("area");
   const customArea = data.get("customArea").trim();
   const area = selectedArea === "其他/自定义" && customArea ? customArea : selectedArea;
   const parsedCoords = parseCoordinates(data.get("coordinates"));
   const areaCoord = areaCoordinates[area] || areaCoordinates["Washington DC"];
+  const type = data.get("type");
+  const baseDescription = data.get("description").trim();
+  const enrichedDescription = buildEnrichedDescription(type, data, baseDescription);
   const now = new Date().toISOString();
   return {
     id: createId(),
     userId: currentUser.id,
-    type: data.get("type"),
+    type,
     status: "pending",
     title: data.get("title").trim(),
     area,
     price: Number(data.get("price")),
     category: data.get("category").trim(),
     moveIn: data.get("moveIn") || null,
-    nearby: data.get("nearby").trim(),
-    address: data.get("address").trim() || area,
+    nearby: type === "rental" ? data.get("nearby").trim() : data.get("pickupLocation").trim(),
+    address:
+      type === "rental"
+        ? data.get("address").trim() || area
+        : data.get("pickupLocation").trim() || area,
     lat: parsedCoords?.lat ?? areaCoord.lat,
     lng: parsedCoords?.lng ?? areaCoord.lng,
     image: data.get("image").trim(),
     contact: data.get("contact").trim(),
-    description: data.get("description").trim(),
+    description: enrichedDescription,
+    condition: data.get("condition") || "",
+    deliveryAvailable: Boolean(data.get("deliveryAvailable")),
+    furnished: Boolean(data.get("furnished")),
     userName: currentProfile?.display_name || currentUser.email,
     createdAt: now,
     updatedAt: now,
   };
+}
+
+function buildEnrichedDescription(type, data, baseDescription) {
+  if (type === "rental") {
+    const rows = [
+      data.get("deposit") ? `押金：$${Number(data.get("deposit")).toLocaleString()}` : "",
+      data.get("leaseTerm") ? `租期：${data.get("leaseTerm")}` : "",
+      data.get("furnished") ? "带家具" : "",
+      data.get("parking") ? "有停车" : "",
+      data.get("petAllowed") ? "可养宠物" : "",
+    ].filter(Boolean);
+    return rows.length ? `【租房信息】${rows.join(" · ")}\n\n${baseDescription}` : baseDescription;
+  }
+
+  const rows = [
+    data.get("condition") ? `新旧程度：${data.get("condition")}` : "",
+    data.get("negotiable") ? "可议价" : "",
+    data.get("deliveryAvailable") ? "可送货" : "",
+    data.get("pickupLocation") ? `取货地点：${data.get("pickupLocation")}` : "",
+  ].filter(Boolean);
+  return rows.length ? `【二手信息】${rows.join(" · ")}\n\n${baseDescription}` : baseDescription;
 }
 
 async function reportListing(id) {
@@ -615,6 +912,7 @@ function renderAdmin() {
             </div>
           </div>
           <div class="admin-actions">
+            <button class="secondary-btn" type="button" data-detail="${item.id}">查看</button>
             <button class="approve-btn" type="button" data-approve="${item.id}">通过</button>
             <button class="reject-btn" type="button" data-reject="${item.id}">拒绝</button>
           </div>
@@ -625,6 +923,9 @@ function renderAdmin() {
 
   els.adminList.querySelectorAll("[data-approve]").forEach((button) => {
     button.addEventListener("click", () => updateListingStatus(button.dataset.approve, "approved"));
+  });
+  els.adminList.querySelectorAll("[data-detail]").forEach((button) => {
+    button.addEventListener("click", () => showDetail(button.dataset.detail));
   });
   els.adminList.querySelectorAll("[data-reject]").forEach((button) => {
     button.addEventListener("click", () => updateListingStatus(button.dataset.reject, "rejected"));
@@ -908,6 +1209,15 @@ function statusLabel(status) {
       expired: "已下架",
     }[status] || status
   );
+}
+
+function hasText(value, text) {
+  return String(value || "").includes(text);
+}
+
+function extractCondition(item) {
+  const match = String(item.description || "").match(/新旧程度：([^ ·\n]+)/);
+  return item.condition || match?.[1] || "";
 }
 
 function getBbox(lat, lng) {
