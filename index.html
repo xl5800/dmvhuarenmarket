@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DMV华人集市 - 租房二手</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#home" aria-label="DMV华人集市首页">
+        <span class="brand-mark">D</span>
+        <span>
+          <strong>DMV华人集市</strong>
+          <small>租房 · 二手 · 搬家清仓</small>
+        </span>
+      </a>
+      <nav class="desktop-nav" aria-label="主导航">
+        <a href="#rentals">找租房</a>
+        <a href="#secondhand">看二手</a>
+        <a href="#post">免费发布</a>
+        <a href="#account">我的发布</a>
+        <a href="#admin">审核台</a>
+      </nav>
+      <div class="top-actions">
+        <button class="ghost-btn" id="seedButton" type="button">重置示例</button>
+        <button class="primary-btn compact-btn" id="loginButton" type="button">登录</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero section" id="home">
+        <div class="hero-copy">
+          <p class="eyebrow">DMV 本地华人生活信息</p>
+          <h1>找房、转租、买二手，不用再翻微信群。</h1>
+          <p>
+            聚合 Rockville、College Park、Arlington、Fairfax、Tysons 和 DC 的租房、
+            二手、搬家清仓信息。租房支持按你的位置筛选距离，并可一键打开地图导航。
+          </p>
+          <div class="hero-actions">
+            <a class="primary-btn" href="#rentals">找租房</a>
+            <a class="secondary-btn" href="#secondhand">看二手</a>
+            <a class="secondary-btn" href="#post">免费发布</a>
+          </div>
+        </div>
+        <div class="hero-panel" aria-label="平台数据概览">
+          <div>
+            <span id="statRental">0</span>
+            <small>租房/转租</small>
+          </div>
+          <div>
+            <span id="statSecondhand">0</span>
+            <small>二手/清仓</small>
+          </div>
+          <div>
+            <span id="statFresh">0</span>
+            <small>7天内更新</small>
+          </div>
+        </div>
+      </section>
+
+      <section class="section search-band">
+        <div>
+          <p class="eyebrow">快速筛选</p>
+          <h2>像 Craigslist 一样按位置和距离找房</h2>
+          <p class="hint">输入 Rockville、UMD、Tysons、Arlington 等 DMV 地点，或使用当前位置。</p>
+        </div>
+        <div class="filters">
+          <label>
+            关键词
+            <input id="searchInput" type="search" placeholder="例如 UMD、独卫、沙发" />
+          </label>
+          <label>
+            地区
+            <select id="areaFilter"></select>
+          </label>
+          <label>
+            自定义地区
+            <input id="customAreaFilter" type="search" placeholder="例如 Alexandria / McLean / Laurel" />
+          </label>
+          <label>
+            最高价格
+            <input id="maxPriceInput" type="number" min="0" placeholder="不限" />
+          </label>
+          <label>
+            我的位置
+            <input id="locationInput" type="search" placeholder="例如 Rockville / UMD / 20850" />
+          </label>
+          <label>
+            距离范围
+            <select id="radiusFilter">
+              <option value="">不限距离</option>
+              <option value="3">3 miles</option>
+              <option value="5">5 miles</option>
+              <option value="10">10 miles</option>
+              <option value="15">15 miles</option>
+              <option value="25">25 miles</option>
+              <option value="50">50 miles</option>
+            </select>
+          </label>
+          <div class="location-actions">
+            <button class="secondary-btn" id="useLocationButton" type="button">使用当前位置</button>
+            <small id="locationStatus">距离筛选仅用于租房。</small>
+          </div>
+        </div>
+      </section>
+
+      <section class="section split" id="rentals">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Rentals</p>
+            <h2>DMV 租房与转租</h2>
+          </div>
+          <a href="#post" class="link-btn" data-post-type="rental">发布租房</a>
+        </div>
+        <div class="listing-grid" id="rentalList"></div>
+      </section>
+
+      <section class="section split" id="secondhand">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Secondhand</p>
+            <h2>二手与搬家清仓</h2>
+          </div>
+          <a href="#post" class="link-btn" data-post-type="secondhand">发布二手</a>
+        </div>
+        <div class="listing-grid" id="secondhandList"></div>
+      </section>
+
+      <section class="section post-section" id="post">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Post</p>
+            <h2>免费发布信息</h2>
+          </div>
+          <span class="pill">提交后进入待审核</span>
+        </div>
+
+        <form class="post-form" id="postForm">
+          <div class="form-row">
+            <label>
+              类型
+              <select name="type" id="typeSelect" required>
+                <option value="rental">租房/转租</option>
+                <option value="secondhand">二手/清仓</option>
+              </select>
+            </label>
+            <label>
+              地区
+              <select name="area" required></select>
+            </label>
+          </div>
+          <label>
+            其他地区 / 小区 / 城市
+            <input name="customArea" placeholder="如果下拉没有，请填写，例如 Alexandria、McLean、Laurel" />
+          </label>
+          <label>
+            标题
+            <input name="title" maxlength="60" required placeholder="例如 Rockville 主卧转租，近红线地铁" />
+          </label>
+          <div class="form-row">
+            <label>
+              价格
+              <input name="price" type="number" min="0" required placeholder="租金或售价" />
+            </label>
+            <label>
+              分类/房型
+              <input name="category" required placeholder="1B1B、单间、家具、电子产品等" />
+            </label>
+          </div>
+          <div class="form-row rental-fields">
+            <label>
+              入住时间
+              <input name="moveIn" type="date" />
+            </label>
+            <label>
+              附近
+              <input name="nearby" placeholder="Metro、学校、公司或商圈" />
+            </label>
+          </div>
+          <div class="form-row rental-fields">
+            <label>
+              房源位置
+              <input name="address" placeholder="例如 Twinbrook Metro / 1327 Rockville Pike" />
+            </label>
+            <label>
+              坐标
+              <input name="coordinates" placeholder="可选：39.0840,-77.1528" />
+            </label>
+          </div>
+          <label>
+            上传图片
+            <input name="imageFile" type="file" accept="image/*" />
+          </label>
+          <label>
+            图片链接备用
+            <input name="image" type="url" placeholder="可选：如果暂时不上传图片，也可以粘贴图片网址" />
+          </label>
+          <label>
+            联系方式
+            <input name="contact" required placeholder="微信 / 手机 / 邮箱" />
+          </label>
+          <label>
+            描述
+            <textarea name="description" rows="5" required placeholder="写清楚位置、时间、交通、家具、看房方式和注意事项"></textarea>
+          </label>
+          <button class="primary-btn" type="submit">提交发布</button>
+        </form>
+      </section>
+
+      <section class="section admin-section" id="admin">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Admin</p>
+            <h2>审核台</h2>
+          </div>
+          <span class="pill" id="pendingCount">0 条待审核</span>
+        </div>
+        <div class="admin-list" id="adminList"></div>
+      </section>
+
+      <section class="section account-section" id="account">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Account</p>
+            <h2>我的发布</h2>
+          </div>
+          <span class="pill" id="accountStatus">未登录</span>
+        </div>
+        <div class="admin-list" id="accountList"></div>
+      </section>
+    </main>
+
+    <dialog class="detail-dialog" id="detailDialog">
+      <button class="close-btn" id="closeDialog" type="button" aria-label="关闭">×</button>
+      <div id="detailContent"></div>
+    </dialog>
+
+    <dialog class="login-dialog" id="loginDialog">
+      <button class="close-btn" id="closeLoginDialog" type="button" aria-label="关闭">×</button>
+      <form class="login-form" id="loginForm">
+        <p class="eyebrow">Login</p>
+        <h2>登录后发布和查看联系方式</h2>
+        <label>
+          邮箱
+          <input name="email" type="email" required placeholder="you@example.com" />
+        </label>
+        <label>
+          昵称
+          <input name="name" maxlength="24" placeholder="例如 DMV小王" />
+        </label>
+        <label>
+          密码
+          <input name="password" type="password" minlength="6" required placeholder="至少 6 位" />
+        </label>
+        <button class="primary-btn" type="submit">登录 / 注册</button>
+        <p class="hint">如果邮箱不存在，会自动注册。若开启邮箱验证，请先去邮箱确认。</p>
+      </form>
+    </dialog>
+
+    <nav class="mobile-nav" aria-label="底部导航">
+      <a href="#rentals">租房</a>
+      <a href="#secondhand">二手</a>
+      <a href="#post">发布</a>
+      <a href="#account">我的</a>
+      <a href="#admin">审核</a>
+    </nav>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="./supabase-config.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
