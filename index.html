@@ -16,11 +16,11 @@
         </span>
       </a>
       <nav class="desktop-nav" aria-label="主导航">
+        <a href="#home">首页</a>
         <a href="#rentals">找租房</a>
         <a href="#secondhand">看二手</a>
         <a href="#post">免费发布</a>
         <a href="#account">我的发布</a>
-        <a href="#admin">审核台</a>
       </nav>
       <div class="top-actions">
         <button class="ghost-btn" id="seedButton" type="button">重置示例</button>
@@ -29,11 +29,16 @@
     </header>
 
     <main>
-      <section class="hero section" id="home">
+      <section class="hero section app-home" id="home">
         <div class="hero-copy">
+          <div class="app-location">
+            <strong>DMV</strong>
+            <span>附近</span>
+            <span>租房</span>
+          </div>
           <p class="eyebrow">DMV LOCAL MARKET</p>
-          <h1>租房、转租、二手交易，一站发布和查找。</h1>
-          <p>面向 DC、Maryland、Virginia 的本地生活信息平台。支持地区筛选、距离筛选、图片展示和审核发布。</p>
+          <h1>租房和二手，本地华人生活信息。</h1>
+          <p>先做好两个核心功能：找房源、看二手。其他服务等功能成熟后再开放。</p>
           <div class="hero-actions">
             <a class="primary-btn" href="#rentals">找租房</a>
             <a class="secondary-btn" href="#secondhand">看二手</a>
@@ -59,36 +64,12 @@
       <section class="section category-section" aria-label="快捷分类">
         <div class="category-grid">
           <a class="category-tile" href="#rentals" data-post-type="rental">
-            <span class="cat-icon cat-orange">🏠</span>
+            <span class="cat-icon cat-orange">租</span>
             <strong>租房</strong>
           </a>
           <a class="category-tile" href="#secondhand">
-            <span class="cat-icon cat-blue">🛋</span>
+            <span class="cat-icon cat-blue">二</span>
             <strong>二手</strong>
-          </a>
-          <a class="category-tile" href="#post" data-post-type="secondhand">
-            <span class="cat-icon cat-green">📦</span>
-            <strong>搬家清仓</strong>
-          </a>
-          <a class="category-tile" href="#post" data-post-type="rental">
-            <span class="cat-icon cat-purple">🔁</span>
-            <strong>转租</strong>
-          </a>
-          <a class="category-tile" href="#post" data-post-type="secondhand">
-            <span class="cat-icon cat-red">🚗</span>
-            <strong>二手车</strong>
-          </a>
-          <a class="category-tile" href="#post" data-post-type="secondhand">
-            <span class="cat-icon cat-teal">🔌</span>
-            <strong>电子产品</strong>
-          </a>
-          <a class="category-tile" href="#post" data-post-type="secondhand">
-            <span class="cat-icon cat-yellow">🪑</span>
-            <strong>家具家电</strong>
-          </a>
-          <a class="category-tile" href="#post">
-            <span class="cat-icon cat-pink">📝</span>
-            <strong>免费发布</strong>
           </a>
         </div>
       </section>
@@ -363,11 +344,11 @@
     </dialog>
 
     <nav class="mobile-nav" aria-label="底部导航">
+      <a href="#home">首页</a>
       <a href="#rentals">租房</a>
-      <a href="#secondhand">二手</a>
       <a href="#post">发布</a>
+      <a href="#secondhand">二手</a>
       <a href="#account">我的</a>
-      <a href="#admin">审核</a>
     </nav>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
