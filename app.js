@@ -143,6 +143,9 @@ const els = {
   forgotPasswordButton: document.querySelector("#forgotPasswordButton"),
   accountStatus: document.querySelector("#accountStatus"),
   accountList: document.querySelector("#accountList"),
+  favoriteList: document.querySelector("#favoriteList"),
+  messageList: document.querySelector("#messageList"),
+  profileName: document.querySelector("#profileName"),
   typeSelect: document.querySelector("#typeSelect"),
   adminList: document.querySelector("#adminList"),
   pendingCount: document.querySelector("#pendingCount"),
@@ -412,6 +415,8 @@ function render() {
   const approved = filterListings(listings.filter((item) => item.status === "approved"));
   renderCards(els.rentalList, approved.filter((item) => item.type === "rental"));
   renderCards(els.secondhandList, approved.filter((item) => item.type === "secondhand"));
+  renderFavorites(approved);
+  renderMessages(approved);
   renderAdmin();
   renderAccount();
   renderUser();
@@ -458,6 +463,94 @@ function renderCards(target, items) {
   target.querySelectorAll("[data-report]").forEach((button) => {
     button.addEventListener("click", () => reportListing(button.dataset.report));
   });
+}
+
+function renderFavorites(approved) {
+  const savedItems = approved.slice(0, 3);
+  if (!savedItems.length) {
+    els.favoriteList.innerHTML = `
+      <div class="empty">
+        你还没有收藏任何内容。看到喜欢的房源或物品，可以点收藏保存到这里。
+        <a class="primary-btn inline-action" href="#home">去首页看看</a>
+      </div>
+    `;
+    return;
+  }
+
+  els.favoriteList.innerHTML = savedItems.map(savedItemTemplate).join("");
+  els.favoriteList.querySelectorAll("[data-detail]").forEach((button) => {
+    button.addEventListener("click", () => showDetail(button.dataset.detail));
+  });
+}
+
+function savedItemTemplate(item) {
+  return `
+    <article class="saved-item">
+      <div class="saved-thumb">${imageTemplate(item)}</div>
+      <div>
+        <div class="saved-title">
+          <strong>${escapeHtml(item.title)}</strong>
+          <span>♥</span>
+        </div>
+        <p>$${Number(item.price).toLocaleString()} · ${escapeHtml(item.area)} · ${timeAgo(item.updatedAt)}</p>
+        <small>${item.type === "rental" ? "租房" : "二手"}</small>
+        <div class="saved-actions">
+          <button type="button" data-detail="${item.id}">查看详情</button>
+          <a href="#messages">联系对方</a>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function renderMessages(approved) {
+  const rental = approved.find((item) => item.type === "rental");
+  const secondhand = approved.find((item) => item.type === "secondhand");
+  const rows = [
+    rental
+      ? {
+          image: rental.image || fallbackImages.rental,
+          title: rental.title,
+          body: "你好，请问什么时候方便看房？",
+          time: "2分钟前",
+          tag: "租房",
+        }
+      : null,
+    secondhand
+      ? {
+          image: secondhand.image || fallbackImages.secondhand,
+          title: secondhand.title,
+          body: "物品还在吗？我想约时间取。",
+          time: "今天 3:20 PM",
+          tag: "二手",
+        }
+      : null,
+    {
+      image: "",
+      title: "系统通知",
+      body: "发布内容提交后会进入审核，通过后显示在列表中。",
+      time: "今天",
+      tag: "通知",
+    },
+  ].filter(Boolean);
+
+  els.messageList.innerHTML = rows
+    .map(
+      (row) => `
+        <article class="message-item">
+          <div class="message-thumb">
+            ${row.image ? `<img src="${escapeHtml(row.image)}" alt="" loading="lazy" />` : "通"}
+          </div>
+          <div>
+            <strong>${escapeHtml(row.title)}</strong>
+            <p>${escapeHtml(row.body)}</p>
+            <small>${escapeHtml(row.tag)} · ${escapeHtml(row.time)}</small>
+          </div>
+          <span class="unread-dot"></span>
+        </article>
+      `
+    )
+    .join("");
 }
 
 function cardTemplate(item) {
@@ -935,6 +1028,7 @@ function renderAdmin() {
 function renderAccount() {
   if (!currentUser) {
     els.accountStatus.textContent = "未登录";
+    els.profileName.textContent = "Barry";
     els.accountList.innerHTML = `
       <div class="empty">
         登录后可以查看你发布过的房源和二手信息。
@@ -945,6 +1039,7 @@ function renderAccount() {
   }
 
   els.accountStatus.textContent = currentUser.email;
+  els.profileName.textContent = currentProfile?.display_name || currentUser.email.split("@")[0];
   const mine = listings.filter((item) => item.userId === currentUser.id);
   if (!mine.length) {
     els.accountList.innerHTML = `<div class="empty">你还没有发布内容。可以先发布一条租房或二手信息。</div>`;

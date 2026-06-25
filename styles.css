@@ -1492,8 +1492,16 @@ main {
   order: 6;
 }
 
-#account {
+#favorites {
   order: 7;
+}
+
+#messages {
+  order: 8;
+}
+
+#account {
+  order: 9;
 }
 
 #admin {
@@ -1643,6 +1651,227 @@ main {
   display: none;
 }
 
+.post-type-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.post-type-card {
+  display: grid;
+  gap: 8px;
+  min-height: 118px;
+  padding: 18px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.post-type-card span {
+  display: inline-grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 8px;
+  background: #fff1e8;
+  color: var(--primary);
+  font-weight: 900;
+}
+
+.post-type-card:nth-child(2) span {
+  background: #e8f2ff;
+  color: #2563eb;
+}
+
+.post-type-card strong {
+  font-size: 18px;
+}
+
+.post-type-card small {
+  color: var(--muted);
+}
+
+.favorites-section,
+.messages-section {
+  padding: 24px;
+  margin-top: 32px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 20px;
+}
+
+.content-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  overflow-x: auto;
+}
+
+.content-tabs a {
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 700;
+}
+
+.saved-list,
+.message-list,
+.profile-menu {
+  display: grid;
+  gap: 12px;
+}
+
+.saved-item,
+.message-item,
+.profile-card {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.saved-thumb,
+.message-thumb {
+  overflow: hidden;
+  border-radius: 8px;
+  background: #edf4ff;
+  aspect-ratio: 1 / 1;
+}
+
+.saved-thumb .listing-image {
+  height: 100%;
+}
+
+.saved-thumb img,
+.message-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.saved-thumb .status-badge,
+.saved-thumb .fresh-badge {
+  display: none;
+}
+
+.saved-title {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.saved-title span {
+  color: var(--danger);
+}
+
+.saved-item p,
+.message-item p {
+  margin: 5px 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.saved-item small,
+.message-item small,
+.profile-card small {
+  color: var(--muted);
+}
+
+.saved-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.saved-actions button,
+.saved-actions a {
+  border: 0;
+  border-radius: 8px;
+  background: #f1f5f9;
+  color: var(--text);
+  cursor: pointer;
+  padding: 8px 10px;
+  text-decoration: none;
+  font-weight: 800;
+}
+
+.message-item {
+  position: relative;
+  grid-template-columns: 56px minmax(0, 1fr) 12px;
+}
+
+.message-thumb {
+  display: grid;
+  place-items: center;
+  color: var(--primary);
+  font-weight: 900;
+}
+
+.unread-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--danger);
+}
+
+.profile-card {
+  grid-template-columns: 56px minmax(0, 1fr);
+  margin-bottom: 14px;
+}
+
+.avatar {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 999px;
+  background: #111827;
+  color: #fff;
+  font-weight: 900;
+}
+
+.profile-menu {
+  margin-bottom: 16px;
+}
+
+.profile-menu a {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 800;
+}
+
 @media (min-width: 861px) {
   .topbar {
     justify-content: center;
@@ -1749,5 +1978,24 @@ main {
 
   .mobile-nav {
     grid-template-columns: repeat(5, 1fr);
+  }
+
+  .post-type-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .favorites-section,
+  .messages-section {
+    width: min(100% - 20px, 620px);
+    padding: 16px;
+    margin-top: 20px;
+  }
+
+  .saved-item {
+    grid-template-columns: 76px minmax(0, 1fr);
+  }
+
+  .saved-actions {
+    flex-wrap: wrap;
   }
 }
