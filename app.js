@@ -1,4 +1,5 @@
 const STORAGE_KEY = "dmvHuarenMarketLocalV1";
+const ADMIN_EMAIL = "xlw0980@gmail.com";
 
 const seedListings = [
   {
@@ -160,6 +161,214 @@ function saveState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
+function cloudReady() {
+  return Boolean(supabaseClient?.auth);
+}
+
+function currentUserId() {
+  return state.session?.userId || "";
+}
+
+function mapStatusFromDb(status) {
+  return status === "approved" ? "active" : status || "pending";
+}
+
+function mapStatusToDb(status) {
+  return status === "active" ? "approved" : status || "pending";
+}
+
+function mapTypeFromDb(row) {
+  if (row.category === "wanted") return "wanted";
+  return row.type === "secondhand" ? "used" : "rent";
+}
+
+function mapTypeToDb(type) {
+  return type === "used" ? "secondhand" : "rental";
+}
+
+function parsePriceNumber(value) {
+  const matched = String(value || "").replace(/,/g, "").match(/\d+(\.\d+)?/);
+  return matched ? Number(matched[0]) : 0;
+}
+
+function formatDbPrice(row) {
+  const amount = Number(row.price || 0);
+  if (!amount) return "价格面议";
+  return row.type === "rental" ? `$${amount}/月` : `$${amount}`;
+}
+
+function normalizeDateValue(value) {
+  const text = String(value || "").trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
+}
+
+function timeAgo(value) {
+  const time = new Date(value || Date.now()).getTime();
+  const diff = Math.max(0, Date.now() - time);
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 1) return "刚刚";
+  if (minutes < 60) return `${minutes}分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}小时前`;
+  return `${Math.floor(hours / 24)}天前`;
+}
+
+function dbListingToUi(row, profileMap = {}) {
+  const type = mapTypeFromDb(row);
+  const tags = String(row.nearby || row.category || "")
+    .split(/[,，、]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const ownerProfile = profileMap[row.user_id] || {};
+  const ownerName = ownerProfile.display_name || ownerProfile.email || "发布者";
+  return {
+    id: row.id,
+    type,
+    title: row.title,
+    price: formatDbPrice(row),
+    area: row.area,
+    time: timeAgo(row.created_at),
+    tags,
+    detailTags: tags.length ? tags : [typeLabel(type)],
+    photoCount: row.image_url ? 1 : 0,
+    image: row.image_url || fallbackImages[type] || fallbackImages.used,
+    desc: row.description || "",
+    roomType: row.category || "",
+    moveIn: row.move_in || "",
+    contact: row.contact || "站内消息",
+    owner: ownerName,
+    ownerAccount: row.user_id,
+    mine: row.user_id === currentUserId(),
+    status: mapStatusFromDb(row.status),
+    reportedCount: row.reported_count || 0,
+    createdAt: new Date(row.created_at || Date.now()).getTime()
+  };
+}
+
+function uiListingToDb(listing) {
+  return {
+    user_id: currentUserId(),
+    type: mapTypeToDb(listing.type),
+    status: mapStatusToDb(listing.status),
+    title: listing.title,
+    description: listing.desc || "暂无详细描述。",
+    price: parsePriceNumber(listing.price),
+    area: listing.area,
+    category: listing.type === "wanted" ? "wanted" : listing.tags?.[0] || typeLabel(listing.type),
+    move_in: normalizeDateValue(listing.moveIn),
+    nearby: Array.isArray(listing.tags) ? listing.tags.join(", ") : "",
+    image_url: String(listing.image || "").startsWith("data:") ? null : listing.image || null,
+    contact: listing.contact || "站内消息"
+  };
+}
+
+async function fetchProfilesMap(userIds = []) {
+  const ids = [...new Set(userIds.filter(Boolean))];
+  if (!cloudReady() || !ids.length) return {};
+  const { data, error } = await supabaseClient
+    .from("profiles")
+    .select("id,email,display_name,role")
+    .in("id", ids);
+  if (error) {
+    console.warn("Failed to load profiles", error);
+    return {};
+  }
+  return Object.fromEntries((data || []).map((profile) => [profile.id, profile]));
+}
+
+async function loadListingsFromSupabase() {
+  if (!cloudReady()) return false;
+  const { data, error } = await supabaseClient
+    .from("listings")
+    .select("*")
+    .order("created_at", { ascending: false });
+  if (error) {
+    console.warn("Failed to load listings", error);
+    return false;
+  }
+  const profileMap = await fetchProfilesMap((data || []).map((item) => item.user_id));
+  state.listings = (data || []).map((item) => dbListingToUi(item, profileMap));
+  saveState();
+  return true;
+}
+
+async function loadFavoritesFromSupabase() {
+  if (!cloudReady() || !currentUserId()) return false;
+  const { data, error } = await supabaseClient
+    .from("favorites")
+    .select("listing_id")
+    .eq("user_id", currentUserId());
+  if (error) {
+    console.warn("Failed to load favorites", error);
+    return false;
+  }
+  state.favorites = (data || []).map((item) => item.listing_id);
+  saveState();
+  return true;
+}
+
+async function loadConversationsFromSupabase() {
+  if (!cloudReady() || !currentUserId()) return false;
+  const { data: conversations, error } = await supabaseClient
+    .from("conversations")
+    .select("*")
+    .or(`buyer_id.eq.${currentUserId()},seller_id.eq.${currentUserId()}`)
+    .order("updated_at", { ascending: false });
+  if (error) {
+    console.warn("Failed to load conversations", error);
+    state.conversations = [];
+    saveState();
+    return false;
+  }
+  const conversationIds = (conversations || []).map((item) => item.id);
+  let messages = [];
+  if (conversationIds.length) {
+    const result = await supabaseClient
+      .from("messages")
+      .select("*")
+      .in("conversation_id", conversationIds)
+      .order("created_at", { ascending: true });
+    if (!result.error) messages = result.data || [];
+  }
+  const profileMap = await fetchProfilesMap(
+    (conversations || []).flatMap((item) => [item.buyer_id, item.seller_id])
+  );
+  state.conversations = (conversations || []).map((item) => {
+    const otherId = item.buyer_id === currentUserId() ? item.seller_id : item.buyer_id;
+    const otherProfile = profileMap[otherId] || {};
+    const listing = state.listings.find((entry) => entry.id === item.listing_id);
+    const threadMessages = messages
+      .filter((message) => message.conversation_id === item.id)
+      .map((message) => ({
+        id: message.id,
+        senderId: message.sender_id,
+        content: message.content,
+        createdAt: message.created_at
+      }));
+    const last = threadMessages[threadMessages.length - 1];
+    return {
+      id: item.id,
+      listingId: item.listing_id,
+      name: otherProfile.display_name || otherProfile.email || "对方",
+      avatar: (otherProfile.display_name || otherProfile.email || "对").slice(0, 1).toUpperCase(),
+      lastMessage: last?.content || `关于「${listing?.title || "帖子"}」的会话`,
+      time: timeAgo(last?.createdAt || item.updated_at || item.created_at),
+      messages: threadMessages
+    };
+  });
+  saveState();
+  return true;
+}
+
+async function refreshCloudData() {
+  if (!cloudReady()) return;
+  await loadListingsFromSupabase();
+  if (isLoggedIn()) {
+    await loadFavoritesFromSupabase();
+    await loadConversationsFromSupabase();
+  }
+}
+
 function allListings() {
   return sortListings(state.listings.filter(canSeeListing));
 }
@@ -245,12 +454,15 @@ function isLoggedIn() {
 }
 
 function isAdmin() {
-  return Boolean(state.session?.role === "admin" || String(state.session?.account || "").toLowerCase().includes("admin"));
+  const email = String(state.session?.email || state.session?.account || "").toLowerCase();
+  return Boolean(state.session?.role === "admin" || email === ADMIN_EMAIL);
 }
 
 function isOwner(item) {
   if (!item) return false;
-  return item.ownerAccount ? item.ownerAccount === state.session?.account : Boolean(item.mine);
+  return item.ownerAccount
+    ? item.ownerAccount === state.session?.userId || item.ownerAccount === state.session?.account
+    : Boolean(item.mine);
 }
 
 function canSeeListing(item) {
@@ -602,12 +814,18 @@ function renderMessages() {
 function renderConversation(id) {
   const conversation = state.conversations.find((item) => item.id === id) || state.conversations[0];
   if (!conversation) return renderMessages();
+  const messageHtml = conversation.messages.map((message, index) => {
+    const isObject = typeof message === "object" && message !== null;
+    const text = isObject ? message.content : message;
+    const mine = isObject ? message.senderId === currentUserId() : index % 2 === 0;
+    return `<div class="chat-bubble ${mine ? "mine" : "other"}">${escapeHtml(text)}</div>`;
+  }).join("");
 
   app.innerHTML = `
     <section class="page-screen">
       ${pageHeader(conversation.name)}
       <section class="chat-panel">
-        ${conversation.messages.map((message, index) => `<div class="chat-bubble ${index % 2 ? "other" : "mine"}">${message}</div>`).join("")}
+        ${messageHtml}
       </section>
       <form class="chat-compose" data-message-form="${conversation.id}">
         <input name="message" placeholder="输入消息..." required />
@@ -989,14 +1207,43 @@ function renderAuthNotice(title, desc, returnTo = "#home", actionLabel = "返回
   `;
 }
 
-function completeSupabaseAuth(user, returnTo = "#home") {
+async function ensureSupabaseProfile(user, displayName = "") {
+  if (!cloudReady() || !user) return null;
+  const email = normalizeAuthEmail(user.email);
+  const role = email === ADMIN_EMAIL ? "admin" : "user";
+  const fallbackName = displayName || user.user_metadata?.display_name || user.user_metadata?.name || email.split("@")[0] || "DMV用户";
+  const payload = {
+    id: user.id,
+    email,
+    display_name: fallbackName,
+    role
+  };
+  const { data, error } = await supabaseClient
+    .from("profiles")
+    .upsert(payload, { onConflict: "id" })
+    .select()
+    .single();
+  if (error) {
+    console.warn("Failed to upsert profile", error);
+    return payload;
+  }
+  return data || payload;
+}
+
+async function completeSupabaseAuth(user, returnTo = "#home", displayName = "") {
   if (!user) return;
   const email = normalizeAuthEmail(user.email);
-  const userName = user.user_metadata?.display_name || user.user_metadata?.name || (email ? email.split("@")[0] : "DMV用户");
-  completeAuth(email || user.id, { name: userName, email, role: email.includes("admin") ? "admin" : "user" }, returnTo);
-  state.session.provider = "supabase";
-  state.session.userId = user.id;
-  saveState();
+  const profile = await ensureSupabaseProfile(user, displayName);
+  const userName = profile?.display_name || displayName || user.user_metadata?.display_name || user.user_metadata?.name || (email ? email.split("@")[0] : "DMV用户");
+  completeAuth(email || user.id, {
+    name: userName,
+    email,
+    role: profile?.role || (email === ADMIN_EMAIL ? "admin" : "user"),
+    provider: "supabase",
+    userId: user.id
+  }, returnTo);
+  await refreshCloudData();
+  route();
 }
 
 async function syncSupabaseSession() {
@@ -1009,7 +1256,7 @@ async function syncSupabaseSession() {
   const { data } = await supabaseClient.auth.getSession();
   if (data?.session?.user) {
     const currentHash = location.hash || "#home";
-    completeSupabaseAuth(data.session.user, currentHash.startsWith("#auth") ? "#home" : currentHash);
+    await completeSupabaseAuth(data.session.user, currentHash.startsWith("#auth") ? "#home" : currentHash);
     return;
   }
   if (state.session?.provider === "supabase") {
@@ -1021,7 +1268,14 @@ async function syncSupabaseSession() {
 function completeAuth(account, savedAccount, returnTo) {
   const userName = savedAccount?.name || `用户${String(account).slice(-4)}` || "DMV用户";
   const role = savedAccount?.role || (String(account).toLowerCase().includes("admin") ? "admin" : "user");
-  state.session = { loggedIn: true, account, role, provider: savedAccount?.provider || "local" };
+  state.session = {
+    loggedIn: true,
+    account,
+    email: savedAccount?.email || account,
+    role,
+    provider: savedAccount?.provider || "local",
+    userId: savedAccount?.userId || ""
+  };
   state.user = {
     name: userName,
     subtitle: "DMV 华人租房二手",
@@ -1245,9 +1499,22 @@ function rememberHistory(id) {
   saveState();
 }
 
-function toggleFavorite(id) {
+async function toggleFavorite(id) {
   if (!isLoggedIn()) {
     renderAuthPage("登录后收藏帖子", `#listing/${id}`);
+    return;
+  }
+  if (cloudReady() && currentUserId()) {
+    const isFavorite = state.favorites.includes(id);
+    const result = isFavorite
+      ? await supabaseClient.from("favorites").delete().eq("user_id", currentUserId()).eq("listing_id", id)
+      : await supabaseClient.from("favorites").insert({ user_id: currentUserId(), listing_id: id });
+    if (result.error) {
+      window.alert(`收藏失败：${authErrorMessage(result.error)}`);
+      return;
+    }
+    await loadFavoritesFromSupabase();
+    renderDetail(id);
     return;
   }
   state.favorites = state.favorites.includes(id)
@@ -1257,13 +1524,52 @@ function toggleFavorite(id) {
   renderDetail(id);
 }
 
-function createConversation(listingId) {
+async function createConversation(listingId) {
   if (!isLoggedIn()) {
     renderAuthPage("登录后联系发布者", `#listing/${listingId}`);
     return;
   }
   const listing = findListing(listingId);
   if (!listing) return renderUnavailable();
+  if (cloudReady() && currentUserId()) {
+    if (!listing.ownerAccount || listing.ownerAccount === currentUserId()) {
+      window.alert("这是你自己的帖子，不需要联系自己。");
+      return;
+    }
+    const payload = {
+      listing_id: listingId,
+      buyer_id: currentUserId(),
+      seller_id: listing.ownerAccount
+    };
+    let { data: conversation, error } = await supabaseClient
+      .from("conversations")
+      .select("*")
+      .eq("listing_id", listingId)
+      .eq("buyer_id", currentUserId())
+      .eq("seller_id", listing.ownerAccount)
+      .maybeSingle();
+    if (error) {
+      window.alert("消息表还没有准备好，请先运行我生成的 supabase-messaging.sql。");
+      return;
+    }
+    if (!conversation) {
+      const created = await supabaseClient.from("conversations").insert(payload).select().single();
+      if (created.error) {
+        window.alert(`创建会话失败：${authErrorMessage(created.error)}`);
+        return;
+      }
+      conversation = created.data;
+      await supabaseClient.from("messages").insert({
+        conversation_id: conversation.id,
+        sender_id: currentUserId(),
+        content: `你好，我想了解「${listing.title}」。`
+      });
+    }
+    await loadConversationsFromSupabase();
+    location.hash = `#conversation/${conversation.id}`;
+    route();
+    return;
+  }
   let conversation = state.conversations.find((item) => item.listingId === listingId);
   if (!conversation) {
     conversation = {
@@ -1281,7 +1587,7 @@ function createConversation(listingId) {
   location.hash = `#conversation/${conversation.id}`;
 }
 
-function submitListing(form, type) {
+async function submitListing(form, type) {
   if (!isLoggedIn()) {
     renderAuthPage("登录后发布信息", "#publish");
     return;
@@ -1317,11 +1623,30 @@ function submitListing(form, type) {
     moveIn: cleanOr(data.moveIn, ""),
     contact: cleanOr(data.contact, "站内消息"),
     owner: state.user.name,
-    ownerAccount: state.session.account || "",
+    ownerAccount: state.session.userId || state.session.account || "",
     mine: true,
     status: existing?.status || (isAdmin() ? "active" : "pending"),
     createdAt: existing?.createdAt || Date.now()
   };
+
+  if (cloudReady() && currentUserId()) {
+    const payload = uiListingToDb(listing);
+    const request = existing?.id
+      ? supabaseClient.from("listings").update(payload).eq("id", existing.id).select().single()
+      : supabaseClient.from("listings").insert(payload).select().single();
+    const { data: savedListing, error } = await request;
+    if (error) {
+      window.alert(`发布失败：${authErrorMessage(error)}`);
+      return;
+    }
+    if (draftId) {
+      state.drafts = state.drafts.filter((draft) => draft.id !== draftId);
+    }
+    await loadListingsFromSupabase();
+    location.hash = `#listing/${savedListing.id}`;
+    route();
+    return;
+  }
 
   state.listings = existing
     ? state.listings.map((item) => (item.id === editingId ? listing : item))
@@ -1383,9 +1708,19 @@ function editListing(id) {
   renderFormForType(listing.type, listing);
 }
 
-function deleteListing(id) {
+async function deleteListing(id) {
   const listing = state.listings.find((item) => item.id === id && (isOwner(item) || isAdmin()));
   if (!listing || !window.confirm("确定删除这条发布吗？")) return;
+  if (cloudReady() && currentUserId()) {
+    const { error } = await supabaseClient.from("listings").delete().eq("id", id);
+    if (error) {
+      window.alert(`删除失败：${authErrorMessage(error)}`);
+      return;
+    }
+    await loadListingsFromSupabase();
+    isAdmin() ? renderAdminReview(listingStatus(listing)) : renderMyPosts();
+    return;
+  }
   state.listings = state.listings.filter((item) => item.id !== id);
   state.favorites = state.favorites.filter((item) => item !== id);
   state.history = state.history.filter((item) => item !== id);
@@ -1394,8 +1729,21 @@ function deleteListing(id) {
   isAdmin() ? renderAdminReview(listingStatus(listing)) : renderMyPosts();
 }
 
-function updateListingStatus(id, status) {
+async function updateListingStatus(id, status) {
   if (!isAdmin()) return;
+  if (cloudReady()) {
+    const { error } = await supabaseClient
+      .from("listings")
+      .update({ status: mapStatusToDb(status), updated_at: new Date().toISOString() })
+      .eq("id", id);
+    if (error) {
+      window.alert(`审核失败：${authErrorMessage(error)}`);
+      return;
+    }
+    await loadListingsFromSupabase();
+    renderAdminReview(status);
+    return;
+  }
   state.listings = state.listings.map((item) => (item.id === id ? { ...item, status } : item));
   saveState();
   renderAdminReview(status);
@@ -1413,13 +1761,26 @@ function banListingOwner(id) {
   renderAdminReview("rejected");
 }
 
-function reportListing(id) {
+async function reportListing(id) {
   if (!isLoggedIn()) {
     renderAuthPage("登录后举报帖子", `#listing/${id}`);
     return;
   }
   const listing = findListing(id);
   if (!listing || isOwner(listing) || isAdmin()) return;
+  if (cloudReady() && currentUserId()) {
+    const { error } = await supabaseClient.from("reports").insert({
+      listing_id: id,
+      reporter_id: currentUserId(),
+      reason: "用户举报"
+    });
+    if (error) {
+      window.alert(`举报失败：${authErrorMessage(error)}`);
+      return;
+    }
+    window.alert("已收到举报，管理员会在后台查看。");
+    return;
+  }
   const alreadyReported = state.reports.some((report) => report.listingId === id && report.account === state.session.account);
   if (!alreadyReported) {
     state.reports = [{ id: `report-${Date.now()}`, listingId: id, account: state.session.account, time: "刚刚" }, ...state.reports];
@@ -1458,7 +1819,7 @@ function normalizeList(value = "") {
     .filter(Boolean);
 }
 
-function sendMessage(form, conversationId) {
+async function sendMessage(form, conversationId) {
   if (!isLoggedIn()) {
     renderAuthPage("登录后发送消息", "#messages");
     return;
@@ -1466,6 +1827,25 @@ function sendMessage(form, conversationId) {
   const input = form.elements.message;
   const text = input.value.trim();
   if (!text) return;
+  if (cloudReady() && currentUserId()) {
+    const { error } = await supabaseClient.from("messages").insert({
+      conversation_id: conversationId,
+      sender_id: currentUserId(),
+      content: text
+    });
+    if (error) {
+      window.alert(`发送失败：${authErrorMessage(error)}`);
+      return;
+    }
+    await supabaseClient
+      .from("conversations")
+      .update({ updated_at: new Date().toISOString() })
+      .eq("id", conversationId);
+    input.value = "";
+    await loadConversationsFromSupabase();
+    renderConversation(conversationId);
+    return;
+  }
   const conversation = state.conversations.find((item) => item.id === conversationId);
   conversation.messages.push(text);
   conversation.lastMessage = text;
@@ -1499,6 +1879,17 @@ document.addEventListener("submit", async (event) => {
         showAuthError(authForm, "请输入密码。");
         return;
       }
+      if (cloudReady()) {
+        setAuthLoading(authForm, true, "正在登录...");
+        const { data: authData, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+        setAuthLoading(authForm, false);
+        if (error) {
+          showAuthError(authForm, authErrorMessage(error));
+          return;
+        }
+        await completeSupabaseAuth(authData.user, returnTo);
+        return;
+      }
       const account = localAccountForEmail(email);
       if (!account || account.password !== password) {
         showAuthError(authForm, "邮箱或密码不正确，请重新输入。");
@@ -1528,6 +1919,25 @@ document.addEventListener("submit", async (event) => {
         showAuthError(authForm, "请先同意用户服务协议和隐私条款。");
         return;
       }
+      if (cloudReady()) {
+        setAuthLoading(authForm, true, "正在创建...");
+        const { data: authData, error } = await supabaseClient.auth.signUp({
+          email,
+          password,
+          options: { data: { display_name: name || email.split("@")[0] } }
+        });
+        setAuthLoading(authForm, false);
+        if (error) {
+          showAuthError(authForm, authErrorMessage(error));
+          return;
+        }
+        if (authData.session?.user || authData.user) {
+          await completeSupabaseAuth(authData.session?.user || authData.user, returnTo, name);
+          return;
+        }
+        renderAuthNotice("账号已创建", "请返回登录继续使用。", returnTo);
+        return;
+      }
       if (localAccountForEmail(email)) {
         showAuthError(authForm, "这个邮箱已经注册，请直接登录。");
         return;
@@ -1555,6 +1965,19 @@ document.addEventListener("submit", async (event) => {
         showAuthError(authForm, "请输入注册邮箱。");
         return;
       }
+      if (cloudReady()) {
+        setAuthLoading(authForm, true, "正在发送...");
+        const { error } = await supabaseClient.auth.resetPasswordForEmail(email, {
+          redirectTo: authRedirectUrl("reset")
+        });
+        setAuthLoading(authForm, false);
+        if (error) {
+          showAuthError(authForm, authErrorMessage(error));
+          return;
+        }
+        renderAuthNotice("重置邮件已发送", "请打开邮箱里的链接，然后设置新密码。", returnTo);
+        return;
+      }
       if (!localAccountForEmail(email)) {
         showAuthError(authForm, "这个邮箱还没有注册，请先创建账号。");
         return;
@@ -1575,6 +1998,26 @@ document.addEventListener("submit", async (event) => {
       }
       if (password !== String(data.confirmPassword || "")) {
         showAuthError(authForm, "两次输入的新密码不一致。");
+        return;
+      }
+      if (cloudReady()) {
+        setAuthLoading(authForm, true, "正在修改...");
+        const hasRecoverySession = await ensureRecoverySession();
+        if (!hasRecoverySession && !isLoggedIn()) {
+          setAuthLoading(authForm, false);
+          showAuthError(authForm, "请先打开邮箱里的重置链接，再设置新密码。");
+          return;
+        }
+        const { error } = await supabaseClient.auth.updateUser({ password });
+        setAuthLoading(authForm, false);
+        if (error) {
+          showAuthError(authForm, authErrorMessage(error));
+          return;
+        }
+        await supabaseClient.auth.signOut();
+        state.session = { loggedIn: false };
+        saveState();
+        renderAuthPage("修改成功", returnTo, "success");
         return;
       }
       const account = localAccountForEmail(email);
@@ -1603,14 +2046,14 @@ document.addEventListener("submit", async (event) => {
   const listingForm = event.target.closest("[data-listing-form]");
   if (listingForm) {
     event.preventDefault();
-    submitListing(listingForm, listingForm.dataset.listingForm);
+    await submitListing(listingForm, listingForm.dataset.listingForm);
     return;
   }
 
   const messageForm = event.target.closest("[data-message-form]");
   if (messageForm) {
     event.preventDefault();
-    sendMessage(messageForm, messageForm.dataset.messageForm);
+    await sendMessage(messageForm, messageForm.dataset.messageForm);
   }
 });
 
@@ -1645,13 +2088,13 @@ document.addEventListener("click", async (event) => {
 
   const favorite = event.target.closest("[data-favorite]");
   if (favorite) {
-    toggleFavorite(favorite.dataset.favorite);
+    await toggleFavorite(favorite.dataset.favorite);
     return;
   }
 
   const contact = event.target.closest("[data-contact]");
   if (contact) {
-    createConversation(contact.dataset.contact);
+    await createConversation(contact.dataset.contact);
     return;
   }
 
@@ -1670,7 +2113,7 @@ document.addEventListener("click", async (event) => {
 
   const deleteListingButton = event.target.closest("[data-delete-listing]");
   if (deleteListingButton) {
-    deleteListing(deleteListingButton.dataset.deleteListing);
+    await deleteListing(deleteListingButton.dataset.deleteListing);
     return;
   }
 
@@ -1689,7 +2132,7 @@ document.addEventListener("click", async (event) => {
   const reviewButton = event.target.closest("[data-review-status]");
   if (reviewButton) {
     const [id, status] = reviewButton.dataset.reviewStatus.split(":");
-    updateListingStatus(id, status);
+    await updateListingStatus(id, status);
     return;
   }
 
@@ -1701,7 +2144,7 @@ document.addEventListener("click", async (event) => {
 
   const reportButton = event.target.closest("[data-report-listing]");
   if (reportButton) {
-    reportListing(reportButton.dataset.reportListing);
+    await reportListing(reportButton.dataset.reportListing);
     return;
   }
 
@@ -1755,7 +2198,7 @@ document.addEventListener("change", (event) => {
 });
 
 if (hasSupabaseAuth()) {
-  supabaseClient.auth.onAuthStateChange((event, session) => {
+  supabaseClient.auth.onAuthStateChange(async (event, session) => {
     if (event === "PASSWORD_RECOVERY") {
       renderAuthPage("设置新密码", "#home", "reset");
       return;
@@ -1765,7 +2208,7 @@ if (hasSupabaseAuth()) {
       return;
     }
     if (event === "SIGNED_IN" && session?.user && !isLoggedIn()) {
-      completeSupabaseAuth(session.user, "#home");
+      await completeSupabaseAuth(session.user, "#home");
     }
     if (event === "SIGNED_OUT" && state.session?.provider === "supabase") {
       state.session = { loggedIn: false };
@@ -1776,6 +2219,8 @@ if (hasSupabaseAuth()) {
 }
 
 window.addEventListener("hashchange", route);
-window.addEventListener("DOMContentLoaded", () => {
+window.addEventListener("DOMContentLoaded", async () => {
+  await syncSupabaseSession();
+  await refreshCloudData();
   route();
 });
