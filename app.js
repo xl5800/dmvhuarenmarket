@@ -73,8 +73,20 @@ const categories = [
   { key: "used", name: "二手", icon: "物" }
 ];
 
+const fallbackImages = {
+  rent: "https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?auto=format&fit=crop&w=700&q=80",
+  wanted: "https://images.unsplash.com/photo-1522708323590-d24dbb6b0267?auto=format&fit=crop&w=700&q=80",
+  used: "https://images.unsplash.com/photo-1518455027359-f3f8164ba6bd?auto=format&fit=crop&w=700&q=80"
+};
+
 const app = document.querySelector("#app");
+const supabaseConfig = window.DMV_SUPABASE_CONFIG || {};
+const supabaseClient =
+  window.supabase && supabaseConfig.url && supabaseConfig.anonKey
+    ? window.supabase.createClient(supabaseConfig.url, supabaseConfig.anonKey)
+    : null;
 let state = loadState();
+ensureStateDefaults();
 
 function loadState() {
   const saved = localStorage.getItem(STORAGE_KEY);
@@ -87,6 +99,7 @@ function loadState() {
   }
 
   return {
+    session: { loggedIn: false },
     user: { name: "xlw0980", subtitle: "DMV 华人租房二手", avatar: "B" },
     listings: seedListings,
     favorites: ["rent-rockville"],
@@ -115,22 +128,79 @@ function loadState() {
   };
 }
 
+function ensureStateDefaults() {
+  state.session ||= { loggedIn: false };
+  state.user ||= { name: "xlw0980", subtitle: "DMV 华人租房二手", avatar: "B" };
+  state.accounts ||= {};
+  if (!state.accounts["admin@dmv.test"]) {
+    state.accounts["admin@dmv.test"] = { name: "管理员", password: "admin123", role: "admin", email: "admin@dmv.test" };
+  }
+  state.reports ||= [];
+  state.bannedUsers ||= [];
+  state.listings ||= seedListings;
+  state.listings = state.listings.map((item) => {
+    const ownerAccount = item.ownerAccount || `seed:${item.owner || item.id}`;
+    return {
+      status: "active",
+      reports: [],
+      ownerAccount,
+      contact: item.contact || "站内消息",
+      createdAt: item.createdAt || 1,
+      ...item,
+      ownerAccount
+    };
+  });
+  state.favorites ||= [];
+  state.drafts ||= [];
+  state.history ||= [];
+  state.conversations ||= [];
+}
+
 function saveState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
 function allListings() {
-  return [...state.listings].sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
+  return sortListings(state.listings.filter(canSeeListing));
+}
+
+function publicListings() {
+  if (isAdmin()) return adminListings();
+  return sortListings(state.listings.filter((item) => listingStatus(item) === "active" && !state.bannedUsers.includes(item.ownerAccount)));
+}
+
+function adminListings() {
+  return sortListings(state.listings);
+}
+
+function sortListings(entries) {
+  return [...entries].sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
 }
 
 function findListing(id) {
-  return state.listings.find((entry) => entry.id === id) || state.listings[0];
+  const item = state.listings.find((entry) => entry.id === id);
+  return item && canSeeListing(item) ? item : null;
 }
 
 function route() {
+  if (isPasswordRecoveryHash()) {
+    return renderAuthPage("设置新密码", "#home", "reset");
+  }
+
   const hash = location.hash.replace("#", "") || "home";
   const [page, id] = hash.split("/");
   document.body.dataset.page = page;
+
+  if (page === "auth") {
+    return renderAuthPage("欢迎回来", "#home", id || "login");
+  }
+
+  if (requiresAuth(page) && !isLoggedIn()) {
+    return renderAuthPage(authTitle(page), `#${hash}`, "login");
+  }
+  if (page === "admin-review" && !isAdmin()) {
+    return renderNoAccess();
+  }
 
   if (page === "home") return renderHome();
   if (page === "category") return renderCategory(id || "all");
@@ -142,14 +212,79 @@ function route() {
   if (page === "messages") return renderMessages();
   if (page === "conversation") return renderConversation(id);
   if (page === "me") return renderProfile();
-  if (page === "me-posts") return renderSavedList("我的发布", myListings(), "你发布的信息会显示在这里。");
+  if (page === "me-posts") return renderMyPosts();
   if (page === "drafts") return renderDrafts();
   if (page === "favorites") return renderSavedList("我的收藏", favoriteListings(), "收藏过的帖子会显示在这里。");
   if (page === "history") return renderSavedList("浏览历史", historyListings(), "看过的帖子会显示在这里。");
   if (page === "feedback") return renderFeedback();
   if (page === "help") return renderHelp();
   if (page === "settings") return renderSettings();
+  if (page === "admin-review") return renderAdminReview(id || "pending");
   renderHome();
+}
+
+function requiresAuth(page) {
+  return [
+    "publish",
+    "post-used",
+    "post-rent",
+    "post-wanted",
+    "messages",
+    "conversation",
+    "me",
+    "me-posts",
+    "drafts",
+    "favorites",
+    "settings",
+    "admin-review"
+  ].includes(page);
+}
+
+function isLoggedIn() {
+  return Boolean(state.session?.loggedIn && state.session?.provider === "supabase");
+}
+
+function isAdmin() {
+  return Boolean(state.session?.role === "admin" || String(state.session?.account || "").toLowerCase().includes("admin"));
+}
+
+function isOwner(item) {
+  if (!item) return false;
+  return item.ownerAccount ? item.ownerAccount === state.session?.account : Boolean(item.mine);
+}
+
+function canSeeListing(item) {
+  if (!item) return false;
+  if (isAdmin()) return true;
+  if (isOwner(item)) return true;
+  return listingStatus(item) === "active" && !state.bannedUsers.includes(item.ownerAccount);
+}
+
+function listingStatus(item) {
+  return item?.status || "active";
+}
+
+function statusLabel(status) {
+  return { pending: "待审核", active: "已通过", rejected: "已拒绝" }[status] || "已通过";
+}
+
+function authTitle(page) {
+  return (
+    {
+      publish: "登录后发布信息",
+      "post-used": "登录后发布二手物品",
+      "post-rent": "登录后发布房源",
+      "post-wanted": "登录后发布求租需求",
+      messages: "登录后查看消息",
+      conversation: "登录后查看消息",
+      me: "登录后管理你的内容",
+      "me-posts": "登录后查看我的发布",
+      drafts: "登录后查看草稿",
+      favorites: "登录后查看收藏",
+      settings: "登录后进入设置",
+      "admin-review": "管理员登录后审核内容"
+    }[page] || "登录后继续"
+  );
 }
 
 function renderHome() {
@@ -171,7 +306,7 @@ function renderHome() {
 
       <a class="today-strip" href="#category/all">
         <span class="strip-icon">新</span>
-        <b>当前帖子 <strong>${state.listings.length}</strong> 条</b>
+        <b>当前帖子 <strong>${publicListings().length}</strong> 条</b>
         <i></i>
         <b>租房 <strong>${countType("rent")}</strong> 条</b>
         <b>二手 <strong>${countType("used")}</strong> 条</b>
@@ -179,7 +314,7 @@ function renderHome() {
       </a>
 
       <div class="home-feed">
-        ${allListings().map(homeListingCard).join("")}
+        ${publicListings().map(homeListingCard).join("")}
       </div>
 
       ${bottomNav("home")}
@@ -189,7 +324,7 @@ function renderHome() {
 
 function renderCategory(type, query = "") {
   const lowerQuery = query.trim().toLowerCase();
-  const shown = allListings().filter((item) => {
+  const shown = publicListings().filter((item) => {
     const matchesType = type === "all" || item.type === type;
     const text = `${item.title} ${item.area} ${item.price} ${item.desc}`.toLowerCase();
     return matchesType && (!lowerQuery || text.includes(lowerQuery));
@@ -216,8 +351,10 @@ function renderCategory(type, query = "") {
 
 function renderDetail(id) {
   const item = findListing(id);
+  if (!item) return renderUnavailable();
   rememberHistory(item.id);
   const favored = state.favorites.includes(item.id);
+  const canReport = !isOwner(item) && !isAdmin();
 
   app.innerHTML = `
     <section class="page-screen">
@@ -235,6 +372,7 @@ function renderDetail(id) {
           </div>
           <div class="price">${item.price}</div>
           <div class="meta">
+            ${(isOwner(item) || isAdmin()) ? `<span class="status-badge ${listingStatus(item)}">${statusLabel(listingStatus(item))}</span>` : ""}
             <span>${item.area}</span>
             <span>${item.time}</span>
             ${item.tags.map((tag) => `<span class="pill">${tag}</span>`).join("")}
@@ -244,6 +382,13 @@ function renderDetail(id) {
           <div class="detail-actions">
             <a class="secondary-button" href="#category/all">继续浏览</a>
             <button class="primary-button" type="button" data-contact="${item.id}">联系发布者</button>
+            ${canReport ? `<button class="secondary-button report-button" type="button" data-report-listing="${item.id}">举报</button>` : ""}
+            ${isAdmin() ? `
+              <button class="secondary-button" type="button" data-edit-listing="${item.id}">编辑</button>
+              <button class="danger-button" type="button" data-delete-listing="${item.id}">删除</button>
+              <button class="primary-button" type="button" data-review-status="${item.id}:active">通过</button>
+              <button class="secondary-button" type="button" data-review-status="${item.id}:rejected">拒绝</button>
+            ` : ""}
           </div>
         </article>
       </div>
@@ -277,93 +422,108 @@ function renderPublish() {
   `;
 }
 
-function renderUsedForm() {
+function renderUsedForm(source = {}) {
+  const values = formValues(source);
   app.innerHTML = formShell({
     kind: "used",
-    title: "发布二手物品",
+    title: values.id ? "编辑二手物品" : "发布二手物品",
     intro: "适合家具、数码、服饰、母婴、运动用品等本地转让。",
     imageTitle: "物品照片",
-    imageHelper: "可填图片链接；不填会使用默认图片。",
+    imageHelper: "从手机或电脑选择照片；手机上可直接拍照。没有照片也可以发布。",
     fields: `
-      ${inputField("title", "标题", "例如：IKEA 书桌 / MacBook Pro 9成新", true)}
+      ${inputField("title", "标题", "例如：IKEA 书桌 / MacBook Pro 9成新", false, values.title)}
       <div class="field-grid two">
-        ${inputField("price", "价格", "$", true)}
-        ${inputField("area", "所在地区", "例如：Rockville, MD", true)}
+        ${inputField("price", "价格", "$", false, values.price)}
+        ${inputField("area", "所在地区", "例如：Rockville, MD", false, values.area)}
       </div>
-      ${inputField("tags", "标签", "例如：可小刀, 自取, 家具")}
+      ${inputField("tags", "标签", "例如：可小刀, 自取, 家具", false, values.tags)}
     `,
     category: "二手物品",
     chips: ["家具", "数码", "服饰", "母婴", "运动", "其他"],
     description: "补充尺寸、购买时间、取货方式...",
     note: "发布后会保存在本地版本里，可以在我的发布中查看。",
-    submit: "发布二手物品"
-  });
+    submit: values.id ? "保存修改" : "发布二手物品"
+  }, values);
 }
 
-function renderRentForm() {
+function renderRentForm(source = {}) {
+  const values = formValues(source);
   app.innerHTML = formShell({
     kind: "rent",
-    title: "发布房源",
+    title: values.id ? "编辑房源" : "发布房源",
     intro: "把租金、房型、入住时间和联系方式讲清楚，看房沟通会顺很多。",
     imageTitle: "房源照片",
-    imageHelper: "可填图片链接；不填会使用默认房源图。",
+    imageHelper: "从手机或电脑选择照片；手机上可直接拍照。没有照片也可以发布。",
     fields: `
-      ${inputField("title", "标题", "例如：Rockville 单间出租，近地铁", true)}
+      ${inputField("title", "标题", "例如：Rockville 单间出租，近地铁", false, values.title)}
       <div class="field-grid two">
-        ${inputField("price", "月租", "$ / 月", true)}
-        ${inputField("area", "所在地区", "例如：Rockville, MD", true)}
+        ${inputField("price", "月租", "$ / 月", false, values.price)}
+        ${inputField("area", "所在地区", "例如：Rockville, MD", false, values.area)}
       </div>
       <div class="field-grid two">
-        ${selectField("roomType", "房源类型", ["单间", "主卧", "整租", "合租"])}
-        ${selectField("moveIn", "入住时间", ["可立即入住", "一周内", "下个月"])}
+        ${selectField("roomType", "房源类型", ["单间", "主卧", "整租", "合租"], values.roomType)}
+        ${selectField("moveIn", "入住时间", ["可立即入住", "一周内", "下个月"], values.moveIn)}
       </div>
-      ${inputField("tags", "条件标签", "例如：独立卫浴, 包水电, 近地铁")}
+      ${inputField("tags", "条件标签", "例如：独立卫浴, 包水电, 近地铁", false, values.tags)}
     `,
     category: "租房",
     chips: ["独立卫浴", "包水电", "可做饭", "有车位", "近地铁", "可养宠物"],
     description: "介绍房间大小、室友情况、交通、家具、看房时间...",
     note: "发布后会保存在本地版本里，可以在我的发布中查看。",
-    submit: "发布房源"
-  });
+    submit: values.id ? "保存修改" : "发布房源"
+  }, values);
 }
 
-function renderWantedForm() {
+function renderWantedForm(source = {}) {
+  const values = formValues(source);
   app.innerHTML = formShell({
     kind: "wanted",
-    title: "发布求租需求",
+    title: values.id ? "编辑求租需求" : "发布求租需求",
     intro: "告诉房东你想找什么位置、预算和入住时间，让合适房源主动找到你。",
     imageTitle: "需求封面",
-    imageHelper: "可选图片链接；不填会使用默认求租图。",
+    imageHelper: "可选照片；也可以不加图，直接说明位置、预算和偏好。",
     fields: `
-      ${inputField("title", "需求标题", "例如：求租 Rockville 附近单间，8月入住", true)}
+      ${inputField("title", "需求标题", "例如：求租 Rockville 附近单间，8月入住", false, values.title)}
       <div class="field-grid two">
-        ${inputField("price", "预算上限", "$ / 月", true)}
-        ${inputField("area", "目标地区", "例如：Bethesda / Rockville", true)}
+        ${inputField("price", "预算上限", "$ / 月", false, values.price)}
+        ${inputField("area", "目标地区", "例如：Bethesda / Rockville", false, values.area)}
       </div>
       <div class="field-grid two">
-        ${selectField("moveIn", "入住时间", ["可立即入住", "8月入住", "9月入住"])}
-        ${selectField("roomType", "求租类型", ["单间", "主卧", "整租", "合租"])}
+        ${selectField("moveIn", "入住时间", ["可立即入住", "8月入住", "9月入住"], values.moveIn)}
+        ${selectField("roomType", "求租类型", ["单间", "主卧", "整租", "合租"], values.roomType)}
       </div>
-      ${inputField("tags", "需求标签", "例如：近地铁, 独立卫浴, 长租")}
+      ${inputField("tags", "需求标签", "例如：近地铁, 独立卫浴, 长租", false, values.tags)}
     `,
     category: "租房 > 求租需求",
     chips: ["近地铁", "独立卫浴", "女生优先", "无宠物", "长租", "可合租"],
     description: "描述你的预算、期望位置、室友偏好、作息和必须条件...",
     note: "求租需求发布后，其他用户可以通过站内消息联系你。",
-    submit: "发布求租需求"
-  });
+    submit: values.id ? "保存修改" : "发布求租需求"
+  }, values);
 }
 
-function formShell(config) {
+function formShell(config, values = {}) {
+  const previewImage = values.imageDataUrl || values.image || "";
+  const previewSrc = previewImage || "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
   return `
     <section class="page-screen form-page">
       ${pageHeader(config.title)}
       <p class="form-intro">${config.intro}</p>
-      <form data-listing-form="${config.kind}">
+      <form data-listing-form="${config.kind}" data-editing-id="${values.id || ""}" data-draft-id="${values.draftId || ""}">
         <section class="form-card">
           <h2>${config.imageTitle}</h2>
           <p class="helper">${config.imageHelper}</p>
-          ${inputField("image", "图片链接", "https://...")}
+          <div class="photo-strip">
+            <label class="upload-tile cover ${previewImage ? "has-preview" : ""}">
+              <input class="visually-hidden" type="file" name="photo" accept="image/*" data-photo-input />
+              <input type="hidden" name="imageDataUrl" value="${escapeHtml(values.imageDataUrl || "")}" data-photo-data />
+              <span data-photo-placeholder>${previewImage ? "更换照片" : "+ 选择照片"}</span>
+              <img src="${previewSrc}" alt="" data-photo-preview ${previewImage ? "" : "hidden"} />
+            </label>
+            <div class="upload-tile">手机可拍照</div>
+            <div class="upload-tile">电脑可选图</div>
+            <div class="upload-tile">可先跳过</div>
+          </div>
         </section>
         <section class="form-card">
           <h2>基本信息</h2>
@@ -373,18 +533,19 @@ function formShell(config) {
           <h2>分类与条件</h2>
           <a class="select-like" href="#publish">${config.category}　›</a>
           <div class="chip-cloud" style="margin-top: 10px;">
-            ${config.chips.map((chip, index) => `<button type="button" class="chip ${index < 2 ? "active" : ""}" data-chip="${chip}">${chip}</button>`).join("")}
+            ${config.chips.map((chip, index) => `<button type="button" class="chip ${selectedChip(values, chip, index) ? "active" : ""}" data-chip="${chip}">${chip}</button>`).join("")}
           </div>
         </section>
         <section class="form-card">
           <h2>描述</h2>
-          <div class="field"><textarea name="desc" placeholder="${config.description}" required></textarea></div>
+          <div class="field"><textarea name="desc" placeholder="${config.description}">${escapeHtml(values.desc || "")}</textarea></div>
         </section>
         <section class="form-card">
           <h2>联系方式</h2>
           <div class="contact-options">
             <button type="button" class="active">站内消息</button><button type="button">电话</button><button type="button">微信</button>
           </div>
+          ${inputField("contact", "联系方式", "可填电话、微信或邮箱；不填默认站内消息", false, values.contact || "")}
           <div class="mini-note">${config.note}</div>
         </section>
         <div class="sticky-submit">
@@ -402,6 +563,7 @@ function renderProfile() {
     ["草稿", "drafts"],
     ["我的收藏", "favorites"],
     ["浏览历史", "history"],
+    ...(isAdmin() ? [["管理员审核", "admin-review/pending"]] : []),
     ["意见反馈", "feedback"],
     ["帮助中心", "help"],
     ["设置", "settings"]
@@ -467,6 +629,23 @@ function renderSavedList(title, entries, emptyText) {
   `;
 }
 
+function renderMyPosts() {
+  const posts = myListings();
+  app.innerHTML = `
+    <section class="page-screen">
+      ${pageHeader("我的发布")}
+      <div class="manage-list">
+        ${
+          posts.length
+            ? posts.map((item) => manageListingCard(item)).join("")
+            : emptyBlock("你发布的信息会显示在这里。")
+        }
+      </div>
+      ${bottomNav("me")}
+    </section>
+  `;
+}
+
 function renderDrafts() {
   app.innerHTML = `
     <section class="page-screen">
@@ -474,10 +653,11 @@ function renderDrafts() {
       <section class="subpage-card">
         ${
           state.drafts.length
-            ? `<div class="subpage-list">${state.drafts.map((draft) => `<a href="#publish">${draft.title || "未命名草稿"}<span>${typeLabel(draft.type)}</span></a>`).join("")}</div>`
+            ? `<div class="manage-list">${state.drafts.map((draft) => manageDraftCard(draft)).join("")}</div>`
             : emptyBlock("保存的草稿会显示在这里")
         }
       </section>
+      ${bottomNav("me")}
     </section>
   `;
 }
@@ -520,9 +700,341 @@ function renderSettings() {
           <a href="#messages">消息通知<span>已开启</span></a>
           <a href="#home">清除演示数据<span data-reset>重置</span></a>
         </div>
+        <button class="logout-button" type="button" data-logout>退出登录</button>
       </section>
     </section>
   `;
+}
+
+function renderNoAccess() {
+  app.innerHTML = `
+    <section class="page-screen">
+      ${pageHeader("无权限")}
+      <section class="subpage-card">
+        <p>这个页面只有管理员可以查看。</p>
+        <a class="primary-button" href="#me">返回我的</a>
+      </section>
+    </section>
+  `;
+}
+
+function renderUnavailable() {
+  app.innerHTML = `
+    <section class="page-screen">
+      ${pageHeader("不可查看")}
+      <section class="subpage-card">
+        <p>这条内容还在审核中、已被拒绝，或你没有权限查看。</p>
+        <a class="primary-button" href="#home">返回首页</a>
+      </section>
+    </section>
+  `;
+}
+
+function renderAdminReview(status = "pending") {
+  const currentStatus = ["pending", "active", "rejected"].includes(status) ? status : "pending";
+  const entries = adminListings().filter((item) => listingStatus(item) === currentStatus);
+  app.innerHTML = `
+    <section class="page-screen admin-screen">
+      ${pageHeader("管理员审核")}
+      <div class="admin-tabs">
+        ${adminTab("pending", "待审核", currentStatus)}
+        ${adminTab("active", "已通过", currentStatus)}
+        ${adminTab("rejected", "已拒绝", currentStatus)}
+      </div>
+      <section class="admin-summary">
+        <span>Pending ${statusCount("pending")}</span>
+        <span>Approved ${statusCount("active")}</span>
+        <span>Rejected ${statusCount("rejected")}</span>
+      </section>
+      <div class="admin-list">
+        ${entries.length ? entries.map(adminReviewCard).join("") : emptyBlock("这里暂时没有内容")}
+      </div>
+      ${bottomNav("me")}
+    </section>
+  `;
+}
+
+function adminTab(status, label, currentStatus) {
+  return `<a class="${status === currentStatus ? "active" : ""}" href="#admin-review/${status}">${label}</a>`;
+}
+
+function statusCount(status) {
+  return state.listings.filter((item) => listingStatus(item) === status).length;
+}
+
+function renderAuthPage(title = "登录后继续", returnTo = "#home", mode = "login") {
+  document.body.dataset.page = "auth";
+  const safeReturnTo = returnTo || "#home";
+  const copy = {
+    login: {
+      title: title === "登录后继续" ? "欢迎回来" : title,
+      desc: "使用邮箱和密码登录后，即可发布信息、收藏帖子、发送消息和管理账号。"
+    },
+    register: {
+      title: "创建账号",
+      desc: "填写邮箱和密码后，我们会发送邮箱验证码。"
+    },
+    registerCode: {
+      title: "输入邮箱验证码",
+      desc: "验证码已发送到你的邮箱，验证后即可完成注册。"
+    },
+    forgot: {
+      title: "找回密码",
+      desc: "输入注册邮箱，我们会发送一封重置密码邮件。"
+    },
+    reset: {
+      title: "设置新密码",
+      desc: "请设置一个新的密码，建议至少 6 位并包含数字和字母。"
+    }
+  };
+
+  const authShell = (content, helpLink = true) => `
+    <section class="page-screen auth-screen auth-v2-screen">
+      <header class="auth-topbar auth-v2-topbar">
+        <button class="plain-back" type="button" data-back aria-label="返回">‹</button>
+        ${helpLink ? `<a href="#help">帮助</a>` : `<span></span>`}
+      </header>
+      <section class="auth-card auth-v2-card" aria-label="账号页面">
+        <a class="auth-brand-v2" href="#home" aria-label="DMV 华人市场首页">
+          <span>DMV</span><b>华人市场</b>
+        </a>
+        ${content}
+      </section>
+    </section>
+  `;
+
+  const titleBlock = (currentMode) => `
+    <div class="auth-title-block">
+      <h1>${escapeHtml(copy[currentMode]?.title || "欢迎回来")}</h1>
+      <p>${escapeHtml(copy[currentMode]?.desc || "登录后继续使用 DMV 华人市场。")}</p>
+    </div>
+  `;
+
+  const passwordInput = (name, label, placeholder, autocomplete = "new-password") => `
+    <label class="auth-input">
+      <span>${label}</span>
+      <div><em>锁</em><input name="${name}" type="password" autocomplete="${autocomplete}" minlength="6" placeholder="${placeholder}" required /><button type="button" data-toggle-password>显示</button></div>
+    </label>
+  `;
+
+  if (mode === "register") {
+    app.innerHTML = authShell(`
+      ${titleBlock("register")}
+      <form class="auth-v2-form" data-auth-form data-auth-action="register">
+        <input type="hidden" name="returnTo" value="${escapeHtml(safeReturnTo)}" />
+        <label class="auth-input"><span>邮箱</span><div><em>@</em><input name="email" type="email" autocomplete="email" placeholder="请输入常用邮箱" required /></div></label>
+        <label class="auth-input"><span>昵称</span><div><em>人</em><input name="name" autocomplete="name" maxlength="28" placeholder="例如 Rockville 小陈" /></div></label>
+        ${passwordInput("password", "密码", "至少 6 位密码")}
+        ${passwordInput("confirmPassword", "确认密码", "再次输入密码")}
+        <label class="auth-agreement auth-v2-agreement"><input type="checkbox" name="agreement" required /><span>我已阅读并同意<a href="#terms">《用户服务协议》</a>和<a href="#privacy">《隐私条款》</a></span></label>
+        <button class="primary-button auth-v2-submit" type="submit">发送邮箱验证码</button>
+        <p class="auth-switch">已有账号？<button type="button" data-auth-screen="login">去登录</button></p>
+      </form>
+    `);
+    return;
+  }
+
+  if (mode === "register-code") {
+    const pending = state.pendingRegister || {};
+    app.innerHTML = authShell(`
+      ${titleBlock("registerCode")}
+      <form class="auth-v2-form" data-auth-form data-auth-action="register-code">
+        <input type="hidden" name="returnTo" value="${escapeHtml(pending.returnTo || safeReturnTo)}" />
+        <label class="auth-input"><span>邮箱</span><div><em>@</em><input name="email" type="email" autocomplete="email" value="${escapeHtml(pending.email || "")}" placeholder="请输入注册邮箱" required /></div></label>
+        <label class="auth-input"><span>邮箱验证码</span><div><em>#</em><input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="请输入邮箱验证码" required /></div></label>
+        <button class="primary-button auth-v2-submit" type="submit">完成注册</button>
+        <p class="auth-switch">没有收到？<button type="button" data-auth-screen="register">重新填写邮箱</button></p>
+      </form>
+    `);
+    return;
+  }
+
+  if (mode === "forgot") {
+    app.innerHTML = authShell(`
+      ${titleBlock("forgot")}
+      <form class="auth-v2-form" data-auth-form data-auth-action="forgot">
+        <input type="hidden" name="returnTo" value="${escapeHtml(safeReturnTo)}" />
+        <label class="auth-input"><span>邮箱</span><div><em>@</em><input name="email" type="email" autocomplete="email" placeholder="请输入注册邮箱" required /></div></label>
+        <button class="primary-button auth-v2-submit" type="submit">发送重置邮件</button>
+        <p class="auth-switch">想起来了？<button type="button" data-auth-screen="login">返回登录</button></p>
+      </form>
+    `);
+    return;
+  }
+
+  if (mode === "reset") {
+    app.innerHTML = authShell(`
+      ${titleBlock("reset")}
+      <form class="auth-v2-form" data-auth-form data-auth-action="reset">
+        <input type="hidden" name="returnTo" value="${escapeHtml(safeReturnTo)}" />
+        ${passwordInput("password", "新密码", "请输入新密码")}
+        ${passwordInput("confirmPassword", "确认新密码", "再次输入新密码")}
+        <button class="primary-button auth-v2-submit" type="submit">确认修改</button>
+      </form>
+    `);
+    return;
+  }
+
+  if (mode === "success") {
+    app.innerHTML = authShell(`
+      <div class="auth-success-card">
+        <span class="auth-success-icon">✓</span>
+        <h1>密码修改成功</h1>
+        <p>请使用新的密码重新登录。</p>
+        <button class="primary-button auth-v2-submit" type="button" data-auth-screen="login">返回登录</button>
+      </div>
+    `, false);
+    return;
+  }
+
+  app.innerHTML = authShell(`
+    ${titleBlock("login")}
+    <form class="auth-v2-form" data-auth-form data-auth-action="login">
+      <input type="hidden" name="returnTo" value="${escapeHtml(safeReturnTo)}" />
+      <label class="auth-input"><span>邮箱</span><div><em>@</em><input name="email" type="email" autocomplete="username" placeholder="请输入邮箱" required /></div></label>
+      <label class="auth-input"><span>密码</span><div><em>锁</em><input name="password" type="password" autocomplete="current-password" placeholder="请输入密码" required /><button type="button" data-toggle-password>显示</button></div></label>
+      <div class="auth-row-between"><label><input type="checkbox" name="remember" /> 记住我</label><button type="button" data-auth-screen="forgot">忘记密码？</button></div>
+      <button class="primary-button auth-v2-submit" type="submit">登录</button>
+      <div class="auth-divider"><span>或</span></div>
+      <button class="secondary-button auth-v2-secondary" type="button" data-auth-screen="register">创建新账号</button>
+    </form>
+  `);
+}
+
+function showAuthError(form, message) {
+  form.querySelector("[data-auth-error]")?.remove();
+  form.insertAdjacentHTML("afterbegin", `<div class="auth-error" data-auth-error>${escapeHtml(message)}</div>`);
+}
+
+function hasSupabaseAuth() {
+  return Boolean(supabaseClient?.auth);
+}
+
+function authRedirectUrl(mode = "reset") {
+  return `${window.location.origin}${window.location.pathname}#auth/${mode}`;
+}
+
+function isPasswordRecoveryHash() {
+  const text = `${window.location.hash || ""}&${window.location.search || ""}`;
+  return /(^|[&#?])type=recovery(&|$)/.test(text);
+}
+
+function recoveryParams() {
+  const raw = `${window.location.hash || ""}&${window.location.search || ""}`.replace(/^#/, "");
+  return new URLSearchParams(raw);
+}
+
+async function ensureRecoverySession() {
+  if (!hasSupabaseAuth() || !isPasswordRecoveryHash()) return false;
+  const { data } = await supabaseClient.auth.getSession();
+  if (data?.session) return true;
+  const params = recoveryParams();
+  const accessToken = params.get("access_token");
+  const refreshToken = params.get("refresh_token");
+  if (!accessToken || !refreshToken) return false;
+  const result = await supabaseClient.auth.setSession({
+    access_token: accessToken,
+    refresh_token: refreshToken
+  });
+  return Boolean(result.data?.session && !result.error);
+}
+
+function normalizeAuthEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function authErrorMessage(error) {
+  const message = String(error?.message || "");
+  if (!message) return "认证服务暂时不可用，请稍后再试。";
+  if (/auth session missing/i.test(message)) return "重置链接已经失效或没有被正确打开，请重新发送一封重置密码邮件。";
+  if (/invalid login credentials/i.test(message)) return "邮箱或密码不正确，请重新输入。";
+  if (/email not confirmed/i.test(message)) return "请先打开邮箱里的确认邮件，再回来登录。";
+  if (/already registered|already exists|user already/i.test(message)) return "这个邮箱已经注册，请直接登录。";
+  if (/token|otp|code/i.test(message)) return "验证码不正确或已过期，请重新发送后再试。";
+  if (/password/i.test(message) && /six|6|weak|short/i.test(message)) return "密码至少需要 6 位。";
+  return message;
+}
+
+function setAuthLoading(form, loading, text = "处理中...") {
+  const button = form?.querySelector('button[type="submit"]');
+  if (!button) return;
+  if (loading) {
+    button.dataset.originalText = button.textContent;
+    button.textContent = text;
+    button.disabled = true;
+  } else {
+    button.textContent = button.dataset.originalText || button.textContent;
+    button.disabled = false;
+    delete button.dataset.originalText;
+  }
+}
+
+function renderAuthNotice(title, desc, returnTo = "#home", actionLabel = "返回登录", actionMode = "login") {
+  document.body.dataset.page = "auth";
+  app.innerHTML = `
+    <section class="page-screen auth-screen auth-v2-screen">
+      <header class="auth-topbar auth-v2-topbar">
+        <button class="plain-back" type="button" data-back aria-label="返回">‹</button>
+        <span></span>
+      </header>
+      <section class="auth-card auth-v2-card" aria-label="账号页面">
+        <a class="auth-brand-v2" href="#home" aria-label="DMV 华人市场首页">
+          <span>DMV</span><b>华人市场</b>
+        </a>
+        <div class="auth-success-card">
+          <span class="auth-success-icon">✓</span>
+          <h1>${escapeHtml(title)}</h1>
+          <p>${escapeHtml(desc)}</p>
+          <form data-auth-form data-auth-action="notice">
+            <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}" />
+            <button class="primary-button auth-v2-submit" type="button" data-auth-screen="${escapeHtml(actionMode)}">${escapeHtml(actionLabel)}</button>
+          </form>
+        </div>
+      </section>
+    </section>
+  `;
+}
+
+function completeSupabaseAuth(user, returnTo = "#home") {
+  if (!user) return;
+  const email = normalizeAuthEmail(user.email);
+  const userName = user.user_metadata?.display_name || user.user_metadata?.name || (email ? email.split("@")[0] : "DMV用户");
+  completeAuth(email || user.id, { name: userName, email, role: email.includes("admin") ? "admin" : "user" }, returnTo);
+  state.session.provider = "supabase";
+  state.session.userId = user.id;
+  saveState();
+}
+
+async function syncSupabaseSession() {
+  if (!hasSupabaseAuth()) return;
+  if (isPasswordRecoveryHash()) {
+    await ensureRecoverySession();
+    renderAuthPage("设置新密码", "#home", "reset");
+    return;
+  }
+  const { data } = await supabaseClient.auth.getSession();
+  if (data?.session?.user) {
+    const currentHash = location.hash || "#home";
+    completeSupabaseAuth(data.session.user, currentHash.startsWith("#auth") ? "#home" : currentHash);
+    return;
+  }
+  if (state.session?.provider === "supabase") {
+    state.session = { loggedIn: false };
+    saveState();
+  }
+}
+
+function completeAuth(account, savedAccount, returnTo) {
+  const userName = savedAccount?.name || `用户${String(account).slice(-4)}` || "DMV用户";
+  const role = savedAccount?.role || (String(account).toLowerCase().includes("admin") ? "admin" : "user");
+  state.session = { loggedIn: true, account, role };
+  state.user = {
+    name: userName,
+    subtitle: "DMV 华人租房二手",
+    avatar: (userName || account || "D").slice(0, 1).toUpperCase()
+  };
+  saveState();
+  location.hash = returnTo || "#home";
 }
 
 function mobileHeader() {
@@ -573,6 +1085,70 @@ function listingCard(item) {
   `;
 }
 
+function manageListingCard(item) {
+  return `
+    <article class="manage-card">
+      <a class="listing-card compact" href="#listing/${item.id}">
+        <img src="${item.image}" alt="${escapeHtml(item.title)}" />
+        <span class="listing-content">
+          <span class="listing-title">${item.title}</span>
+          <span class="price">${item.price}</span>
+          <span class="meta"><span class="status-badge ${listingStatus(item)}">${statusLabel(listingStatus(item))}</span><span>${item.area}</span><span>${typeLabel(item.type)}</span></span>
+        </span>
+      </a>
+      <div class="manage-actions">
+        <a class="secondary-button" href="#listing/${item.id}">查看</a>
+        <button class="secondary-button" type="button" data-edit-listing="${item.id}">编辑</button>
+        <button class="danger-button" type="button" data-delete-listing="${item.id}">删除</button>
+      </div>
+    </article>
+  `;
+}
+
+function manageDraftCard(draft) {
+  const values = formValues(draft);
+  return `
+    <article class="manage-card">
+      <div class="draft-summary">
+        <b>${escapeHtml(values.title || "未命名草稿")}</b>
+        <span>${typeLabel(draft.type)} · ${escapeHtml(values.area || "未填写地区")}</span>
+      </div>
+      <div class="manage-actions">
+        <button class="primary-button" type="button" data-edit-draft="${draft.id}">继续编辑</button>
+        <button class="danger-button" type="button" data-delete-draft="${draft.id}">删除</button>
+      </div>
+    </article>
+  `;
+}
+
+function adminReviewCard(item) {
+  return `
+    <article class="admin-card">
+      <img src="${item.image}" alt="${escapeHtml(item.title)}" />
+      <div class="admin-card-body">
+        <div class="admin-card-head">
+          <b>${escapeHtml(item.title)}</b>
+          <span class="status-badge ${listingStatus(item)}">${statusLabel(listingStatus(item))}</span>
+        </div>
+        <strong>${escapeHtml(item.price)}</strong>
+        <dl class="admin-fields">
+          <div><dt>地址</dt><dd>${escapeHtml(item.area)}</dd></div>
+          <div><dt>发布时间</dt><dd>${escapeHtml(item.time || "刚刚")}</dd></div>
+          <div><dt>发布用户</dt><dd>${escapeHtml(item.owner || "发布者")}</dd></div>
+          <div><dt>联系方式</dt><dd>${escapeHtml(item.contact || "站内消息")}</dd></div>
+          <div><dt>举报</dt><dd>${reportCount(item.id)} 次</dd></div>
+        </dl>
+      </div>
+      <div class="admin-actions">
+        <button class="primary-button" type="button" data-review-status="${item.id}:active">通过</button>
+        <button class="secondary-button" type="button" data-review-status="${item.id}:rejected">拒绝</button>
+        <button class="danger-button" type="button" data-ban-user="${item.id}">封禁用户</button>
+        <a class="secondary-button" href="#listing/${item.id}">查看详情</a>
+      </div>
+    </article>
+  `;
+}
+
 function homeListingCard(item) {
   return `
     <a class="home-listing" href="#listing/${item.id}">
@@ -609,12 +1185,36 @@ function conversationItem(item) {
   `;
 }
 
-function inputField(name, label, placeholder, required = false) {
-  return `<div class="field"><label>${label}</label><input name="${name}" placeholder="${placeholder}" ${required ? "required" : ""} /></div>`;
+function inputField(name, label, placeholder, required = false, value = "") {
+  return `<div class="field"><label>${label}</label><input name="${name}" placeholder="${placeholder}" value="${escapeHtml(value || "")}" ${required ? "required" : ""} /></div>`;
 }
 
-function selectField(name, label, options) {
-  return `<div class="field"><label>${label}</label><select name="${name}">${options.map((item) => `<option>${item}</option>`).join("")}</select></div>`;
+function selectField(name, label, options, value = "") {
+  return `<div class="field"><label>${label}</label><select name="${name}"><option value="">可选</option>${options.map((item) => `<option ${item === value ? "selected" : ""}>${item}</option>`).join("")}</select></div>`;
+}
+
+function formValues(source = {}) {
+  const data = source.data || source;
+  const tagText = Array.isArray(data.tags) ? data.tags.join(", ") : data.tags || "";
+  return {
+    id: data.id || "",
+    draftId: source.data ? source.id : "",
+    title: data.title || "",
+    price: data.price || "",
+    area: data.area || "",
+    tags: tagText,
+    roomType: data.roomType || "",
+    moveIn: data.moveIn || "",
+    contact: data.contact || "",
+    desc: data.desc || "",
+    image: data.image || "",
+    imageDataUrl: data.imageDataUrl || (String(data.image || "").startsWith("data:") ? data.image : "")
+  };
+}
+
+function selectedChip(values, chip, index) {
+  const tags = normalizeList(values.tags);
+  return tags.length ? tags.includes(chip) : false;
 }
 
 function emptyBlock(text) {
@@ -622,7 +1222,7 @@ function emptyBlock(text) {
 }
 
 function countType(type) {
-  return state.listings.filter((item) => item.type === type).length;
+  return publicListings().filter((item) => item.type === type).length;
 }
 
 function categoryName(type) {
@@ -642,7 +1242,7 @@ function historyListings() {
 }
 
 function myListings() {
-  return allListings().filter((item) => item.mine);
+  return sortListings(state.listings.filter(isOwner));
 }
 
 function rememberHistory(id) {
@@ -651,6 +1251,10 @@ function rememberHistory(id) {
 }
 
 function toggleFavorite(id) {
+  if (!isLoggedIn()) {
+    renderAuthPage("登录后收藏帖子", `#listing/${id}`);
+    return;
+  }
   state.favorites = state.favorites.includes(id)
     ? state.favorites.filter((item) => item !== id)
     : [id, ...state.favorites];
@@ -659,7 +1263,12 @@ function toggleFavorite(id) {
 }
 
 function createConversation(listingId) {
+  if (!isLoggedIn()) {
+    renderAuthPage("登录后联系发布者", `#listing/${listingId}`);
+    return;
+  }
   const listing = findListing(listingId);
+  if (!listing) return renderUnavailable();
   let conversation = state.conversations.find((item) => item.listingId === listingId);
   if (!conversation) {
     conversation = {
@@ -678,43 +1287,173 @@ function createConversation(listingId) {
 }
 
 function submitListing(form, type) {
+  if (!isLoggedIn()) {
+    renderAuthPage("登录后发布信息", "#publish");
+    return;
+  }
+  if (state.bannedUsers.includes(state.session.account)) {
+    renderAuthPage("账号已被封禁，不能继续发布。", "#home");
+    return;
+  }
+  const editingId = form.dataset.editingId;
+  const draftId = form.dataset.draftId;
   const data = Object.fromEntries(new FormData(form).entries());
   const selectedChips = [...form.querySelectorAll(".chip.active")].map((chip) => chip.dataset.chip).filter(Boolean);
   const tags = normalizeList(data.tags).length ? normalizeList(data.tags) : selectedChips;
   const detailTags = tags.length ? tags : [typeLabel(type)];
-  const fallbackImages = {
-    rent: "https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?auto=format&fit=crop&w=700&q=80",
-    wanted: "https://images.unsplash.com/photo-1522708323590-d24dbb6b0267?auto=format&fit=crop&w=700&q=80",
-    used: "https://images.unsplash.com/photo-1518455027359-f3f8164ba6bd?auto=format&fit=crop&w=700&q=80"
-  };
+  const existing = editingId ? state.listings.find((item) => item.id === editingId) : null;
+  const imageDataUrl = String(data.imageDataUrl || "");
+  const image = imageDataUrl || existing?.image || fallbackImages[type];
 
   const listing = {
-    id: `${type}-${Date.now()}`,
+    id: existing?.id || `${type}-${Date.now()}`,
     type,
-    title: data.title.trim(),
-    price: data.price.trim(),
-    area: data.area.trim(),
-    time: "刚刚",
+    title: cleanOr(data.title, defaultTitle(type)),
+    price: cleanOr(data.price, defaultPrice(type)),
+    area: cleanOr(data.area, "DMV 地区"),
+    time: existing?.time || "刚刚",
     tags,
     detailTags,
-    photoCount: data.image ? 1 : 0,
-    image: data.image.trim() || fallbackImages[type],
-    desc: data.desc.trim(),
+    photoCount: imageDataUrl ? 1 : existing?.photoCount || 0,
+    image,
+    imageDataUrl,
+    desc: cleanOr(data.desc, "暂无详细描述。"),
+    roomType: cleanOr(data.roomType, ""),
+    moveIn: cleanOr(data.moveIn, ""),
+    contact: cleanOr(data.contact, "站内消息"),
     owner: state.user.name,
+    ownerAccount: state.session.account || "",
     mine: true,
-    createdAt: Date.now()
+    status: existing?.status || (isAdmin() ? "active" : "pending"),
+    createdAt: existing?.createdAt || Date.now()
   };
 
-  state.listings = [listing, ...state.listings];
+  state.listings = existing
+    ? state.listings.map((item) => (item.id === editingId ? listing : item))
+    : [listing, ...state.listings];
+  if (draftId) {
+    state.drafts = state.drafts.filter((draft) => draft.id !== draftId);
+  }
   saveState();
   location.hash = `#listing/${listing.id}`;
 }
 
 function saveDraft(form, type) {
+  if (!isLoggedIn()) {
+    renderAuthPage("登录后保存草稿", "#publish");
+    return;
+  }
   const data = Object.fromEntries(new FormData(form).entries());
-  state.drafts = [{ id: `draft-${Date.now()}`, type, title: data.title || "未命名草稿", data }, ...state.drafts];
+  const draftId = form.dataset.draftId;
+  const editingId = form.dataset.editingId;
+  const existingListing = editingId ? state.listings.find((item) => item.id === editingId) : null;
+  const draft = {
+    id: draftId || `draft-${Date.now()}`,
+    type,
+    listingId: editingId || "",
+    title: cleanOr(data.title, "未命名草稿"),
+    data: {
+      ...data,
+      id: editingId || "",
+      image: data.imageDataUrl || existingListing?.image || "",
+      tags: data.tags || ""
+    }
+  };
+  delete draft.data.photo;
+  state.drafts = [draft, ...state.drafts.filter((item) => item.id !== draft.id)];
   saveState();
   location.hash = "#drafts";
+}
+
+function cleanOr(value, fallback) {
+  const cleaned = String(value || "").trim();
+  return cleaned || fallback;
+}
+
+function defaultTitle(type) {
+  return {
+    rent: "未填写标题的房源",
+    wanted: "未填写标题的求租需求",
+    used: "未填写标题的二手物品"
+  }[type] || "未填写标题的帖子";
+}
+
+function defaultPrice(type) {
+  return type === "wanted" ? "预算面议" : "价格面议";
+}
+
+function editListing(id) {
+  const listing = state.listings.find((item) => item.id === id && (isOwner(item) || isAdmin()));
+  if (!listing) return;
+  renderFormForType(listing.type, listing);
+}
+
+function deleteListing(id) {
+  const listing = state.listings.find((item) => item.id === id && (isOwner(item) || isAdmin()));
+  if (!listing || !window.confirm("确定删除这条发布吗？")) return;
+  state.listings = state.listings.filter((item) => item.id !== id);
+  state.favorites = state.favorites.filter((item) => item !== id);
+  state.history = state.history.filter((item) => item !== id);
+  state.conversations = state.conversations.filter((item) => item.listingId !== id);
+  saveState();
+  isAdmin() ? renderAdminReview(listingStatus(listing)) : renderMyPosts();
+}
+
+function updateListingStatus(id, status) {
+  if (!isAdmin()) return;
+  state.listings = state.listings.map((item) => (item.id === id ? { ...item, status } : item));
+  saveState();
+  renderAdminReview(status);
+}
+
+function banListingOwner(id) {
+  if (!isAdmin()) return;
+  const listing = state.listings.find((item) => item.id === id);
+  if (!listing?.ownerAccount || !window.confirm(`确定封禁用户 ${listing.owner || listing.ownerAccount} 吗？`)) return;
+  state.bannedUsers = [...new Set([listing.ownerAccount, ...state.bannedUsers])];
+  state.listings = state.listings.map((item) =>
+    item.ownerAccount === listing.ownerAccount ? { ...item, status: "rejected" } : item
+  );
+  saveState();
+  renderAdminReview("rejected");
+}
+
+function reportListing(id) {
+  if (!isLoggedIn()) {
+    renderAuthPage("登录后举报帖子", `#listing/${id}`);
+    return;
+  }
+  const listing = findListing(id);
+  if (!listing || isOwner(listing) || isAdmin()) return;
+  const alreadyReported = state.reports.some((report) => report.listingId === id && report.account === state.session.account);
+  if (!alreadyReported) {
+    state.reports = [{ id: `report-${Date.now()}`, listingId: id, account: state.session.account, time: "刚刚" }, ...state.reports];
+    saveState();
+  }
+  window.alert(alreadyReported ? "你已经举报过这条帖子。" : "已收到举报，管理员会在后台查看。");
+}
+
+function reportCount(id) {
+  return state.reports.filter((report) => report.listingId === id).length;
+}
+
+function editDraft(id) {
+  const draft = state.drafts.find((item) => item.id === id);
+  if (!draft) return;
+  renderFormForType(draft.type, draft);
+}
+
+function deleteDraft(id) {
+  if (!window.confirm("确定删除这个草稿吗？")) return;
+  state.drafts = state.drafts.filter((draft) => draft.id !== id);
+  saveState();
+  renderDrafts();
+}
+
+function renderFormForType(type, source = {}) {
+  if (type === "rent") return renderRentForm(source);
+  if (type === "wanted") return renderWantedForm(source);
+  return renderUsedForm(source);
 }
 
 function normalizeList(value = "") {
@@ -725,6 +1464,10 @@ function normalizeList(value = "") {
 }
 
 function sendMessage(form, conversationId) {
+  if (!isLoggedIn()) {
+    renderAuthPage("登录后发送消息", "#messages");
+    return;
+  }
   const input = form.elements.message;
   const text = input.value.trim();
   if (!text) return;
@@ -742,7 +1485,163 @@ function escapeHtml(value) {
   );
 }
 
-document.addEventListener("submit", (event) => {
+document.addEventListener("submit", async (event) => {
+  const authForm = event.target.closest("[data-auth-form]");
+  if (authForm) {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(authForm).entries());
+    const action = authForm.dataset.authAction || "login";
+    const returnTo = data.returnTo || "#home";
+
+    if (!hasSupabaseAuth()) {
+      showAuthError(authForm, "认证服务没有加载成功，请确认网络可访问 Supabase 和页面里的配置。");
+      return;
+    }
+
+    if (action === "login") {
+      const email = normalizeAuthEmail(data.email);
+      const password = String(data.password || "");
+      if (!email) {
+        showAuthError(authForm, "请输入邮箱。");
+        return;
+      }
+      if (!password) {
+        showAuthError(authForm, "请输入密码。");
+        return;
+      }
+      setAuthLoading(authForm, true, "正在登录...");
+      const { data: authData, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+      setAuthLoading(authForm, false);
+      if (error) {
+        showAuthError(authForm, authErrorMessage(error));
+        return;
+      }
+      completeSupabaseAuth(authData.user, returnTo);
+      return;
+    }
+
+    if (action === "register") {
+      const email = normalizeAuthEmail(data.email);
+      const password = String(data.password || "");
+      const name = String(data.name || "").trim();
+      if (!email) {
+        showAuthError(authForm, "请输入邮箱。");
+        return;
+      }
+      if (password.length < 6) {
+        showAuthError(authForm, "密码至少需要 6 位。");
+        return;
+      }
+      if (password !== String(data.confirmPassword || "")) {
+        showAuthError(authForm, "两次输入的密码不一致。");
+        return;
+      }
+      if (!data.agreement) {
+        showAuthError(authForm, "请先同意用户服务协议和隐私条款。");
+        return;
+      }
+      setAuthLoading(authForm, true, "正在发送...");
+      const { data: authData, error } = await supabaseClient.auth.signUp({
+        email,
+        password,
+        options: {
+          emailRedirectTo: authRedirectUrl("register-code"),
+          data: { display_name: name || email.split("@")[0] }
+        }
+      });
+      setAuthLoading(authForm, false);
+      if (error) {
+        showAuthError(authForm, authErrorMessage(error));
+        return;
+      }
+      if (authData.session?.user) {
+        completeSupabaseAuth(authData.session.user, returnTo);
+        return;
+      }
+      state.pendingRegister = { email, name, returnTo };
+      saveState();
+      renderAuthPage("输入邮箱验证码", returnTo, "register-code");
+      return;
+    }
+
+    if (action === "register-code") {
+      const email = normalizeAuthEmail(data.email || state.pendingRegister?.email);
+      const token = String(data.code || "").trim();
+      const returnTarget = data.returnTo || state.pendingRegister?.returnTo || returnTo;
+      if (!email) {
+        showAuthError(authForm, "请输入注册邮箱。");
+        return;
+      }
+      if (!token) {
+        showAuthError(authForm, "请输入邮箱验证码。");
+        return;
+      }
+      setAuthLoading(authForm, true, "正在验证...");
+      let result = await supabaseClient.auth.verifyOtp({ email, token, type: "signup" });
+      if (result.error) {
+        result = await supabaseClient.auth.verifyOtp({ email, token, type: "email" });
+      }
+      setAuthLoading(authForm, false);
+      if (result.error) {
+        showAuthError(authForm, authErrorMessage(result.error));
+        return;
+      }
+      delete state.pendingRegister;
+      saveState();
+      completeSupabaseAuth(result.data.user, returnTarget);
+      return;
+    }
+
+    if (action === "forgot") {
+      const email = normalizeAuthEmail(data.email);
+      if (!email) {
+        showAuthError(authForm, "请输入注册邮箱。");
+        return;
+      }
+      setAuthLoading(authForm, true, "正在发送...");
+      const { error } = await supabaseClient.auth.resetPasswordForEmail(email, {
+        redirectTo: authRedirectUrl("reset")
+      });
+      setAuthLoading(authForm, false);
+      if (error) {
+        showAuthError(authForm, authErrorMessage(error));
+        return;
+      }
+      renderAuthNotice("重置邮件已发送", "请打开邮箱里的链接，然后在打开的页面设置新密码。", returnTo);
+      return;
+    }
+
+    if (action === "reset") {
+      const password = String(data.password || "");
+      if (password.length < 6) {
+        showAuthError(authForm, "新密码至少需要 6 位。");
+        return;
+      }
+      if (password !== String(data.confirmPassword || "")) {
+        showAuthError(authForm, "两次输入的新密码不一致。");
+        return;
+      }
+      setAuthLoading(authForm, true, "正在修改...");
+      const hasRecoverySession = await ensureRecoverySession();
+      if (!hasRecoverySession && isPasswordRecoveryHash()) {
+        setAuthLoading(authForm, false);
+        showAuthError(authForm, "重置链接已经失效或没有被正确打开，请重新发送一封重置密码邮件。");
+        return;
+      }
+      const { error } = await supabaseClient.auth.updateUser({ password });
+      setAuthLoading(authForm, false);
+      if (error) {
+        showAuthError(authForm, authErrorMessage(error));
+        return;
+      }
+      await supabaseClient.auth.signOut();
+      state.session = { loggedIn: false };
+      saveState();
+      renderAuthPage("修改成功", returnTo, "success");
+      return;
+    }
+  }
+
   const searchForm = event.target.closest("[data-search-form]");
   if (searchForm) {
     event.preventDefault();
@@ -765,7 +1664,29 @@ document.addEventListener("submit", (event) => {
   }
 });
 
-document.addEventListener("click", (event) => {
+document.addEventListener("click", async (event) => {
+  const authScreenButton = event.target.closest("[data-auth-screen]");
+  if (authScreenButton) {
+    const form = authScreenButton.closest("form");
+    const returnTo = form?.elements?.returnTo?.value || "#home";
+    renderAuthPage("欢迎回来", returnTo, authScreenButton.dataset.authScreen);
+    return;
+  }
+
+  const togglePassword = event.target.closest("[data-toggle-password]");
+  if (togglePassword) {
+    const input = togglePassword.parentElement.querySelector("input");
+    const show = input.type === "password";
+    input.type = show ? "text" : "password";
+    togglePassword.textContent = show ? "隐藏" : "显示";
+    return;
+  }
+
+  const authMode = event.target.closest("[data-auth-mode]");
+  if (authMode) {
+    return;
+  }
+
   const backButton = event.target.closest("[data-back]");
   if (backButton) {
     history.length > 1 ? history.back() : (location.hash = "#home");
@@ -791,10 +1712,66 @@ document.addEventListener("click", (event) => {
     return;
   }
 
+  const editListingButton = event.target.closest("[data-edit-listing]");
+  if (editListingButton) {
+    editListing(editListingButton.dataset.editListing);
+    return;
+  }
+
+  const deleteListingButton = event.target.closest("[data-delete-listing]");
+  if (deleteListingButton) {
+    deleteListing(deleteListingButton.dataset.deleteListing);
+    return;
+  }
+
+  const editDraftButton = event.target.closest("[data-edit-draft]");
+  if (editDraftButton) {
+    editDraft(editDraftButton.dataset.editDraft);
+    return;
+  }
+
+  const deleteDraftButton = event.target.closest("[data-delete-draft]");
+  if (deleteDraftButton) {
+    deleteDraft(deleteDraftButton.dataset.deleteDraft);
+    return;
+  }
+
+  const reviewButton = event.target.closest("[data-review-status]");
+  if (reviewButton) {
+    const [id, status] = reviewButton.dataset.reviewStatus.split(":");
+    updateListingStatus(id, status);
+    return;
+  }
+
+  const banButton = event.target.closest("[data-ban-user]");
+  if (banButton) {
+    banListingOwner(banButton.dataset.banUser);
+    return;
+  }
+
+  const reportButton = event.target.closest("[data-report-listing]");
+  if (reportButton) {
+    reportListing(reportButton.dataset.reportListing);
+    return;
+  }
+
   const reset = event.target.closest("[data-reset]");
   if (reset) {
     localStorage.removeItem(STORAGE_KEY);
     state = loadState();
+    ensureStateDefaults();
+    location.hash = "#home";
+    route();
+    return;
+  }
+
+  const logout = event.target.closest("[data-logout]");
+  if (logout) {
+    if (hasSupabaseAuth()) {
+      await supabaseClient.auth.signOut();
+    }
+    state.session = { loggedIn: false };
+    saveState();
     location.hash = "#home";
     route();
     return;
@@ -806,5 +1783,51 @@ document.addEventListener("click", (event) => {
   }
 });
 
+document.addEventListener("change", (event) => {
+  const input = event.target.closest("[data-photo-input]");
+  if (!input || !input.files?.[0]) return;
+
+  const file = input.files[0];
+  const reader = new FileReader();
+  reader.onload = () => {
+    const tile = input.closest(".upload-tile");
+    const form = input.closest("form");
+    const dataInput = form.querySelector("[data-photo-data]");
+    const preview = form.querySelector("[data-photo-preview]");
+    const placeholder = form.querySelector("[data-photo-placeholder]");
+    dataInput.value = String(reader.result || "");
+    preview.src = dataInput.value;
+    preview.hidden = false;
+    placeholder.textContent = "更换照片";
+    tile.classList.add("has-preview");
+  };
+  reader.readAsDataURL(file);
+});
+
+if (hasSupabaseAuth()) {
+  supabaseClient.auth.onAuthStateChange((event, session) => {
+    if (event === "PASSWORD_RECOVERY") {
+      renderAuthPage("设置新密码", "#home", "reset");
+      return;
+    }
+    if (isPasswordRecoveryHash()) {
+      renderAuthPage("设置新密码", "#home", "reset");
+      return;
+    }
+    if (event === "SIGNED_IN" && session?.user && !isLoggedIn()) {
+      completeSupabaseAuth(session.user, "#home");
+    }
+    if (event === "SIGNED_OUT") {
+      state.session = { loggedIn: false };
+      saveState();
+      if (!location.hash.startsWith("#auth")) route();
+    }
+  });
+}
+
 window.addEventListener("hashchange", route);
-window.addEventListener("DOMContentLoaded", route);
+window.addEventListener("DOMContentLoaded", async () => {
+  await syncSupabaseSession();
+  if (isPasswordRecoveryHash()) return;
+  route();
+});
