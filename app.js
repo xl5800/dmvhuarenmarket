@@ -241,7 +241,7 @@ function requiresAuth(page) {
 }
 
 function isLoggedIn() {
-  return Boolean(state.session?.loggedIn && state.session?.provider === "supabase");
+  return Boolean(state.session?.loggedIn);
 }
 
 function isAdmin() {
@@ -765,6 +765,7 @@ function statusCount(status) {
 function renderAuthPage(title = "登录后继续", returnTo = "#home", mode = "login") {
   document.body.dataset.page = "auth";
   const safeReturnTo = returnTo || "#home";
+  if (mode === "register-code") mode = "register";
   const copy = {
     login: {
       title: title === "登录后继续" ? "欢迎回来" : title,
@@ -772,15 +773,11 @@ function renderAuthPage(title = "登录后继续", returnTo = "#home", mode = "l
     },
     register: {
       title: "创建账号",
-      desc: "填写邮箱和密码后，我们会发送邮箱验证码。"
-    },
-    registerCode: {
-      title: "输入邮箱验证码",
-      desc: "验证码已发送到你的邮箱，验证后即可完成注册。"
+      desc: "填写邮箱和密码后即可创建账号，暂时不用收邮件确认。"
     },
     forgot: {
       title: "找回密码",
-      desc: "输入注册邮箱，我们会发送一封重置密码邮件。"
+      desc: "输入注册邮箱后，直接设置一个新的登录密码。"
     },
     reset: {
       title: "设置新密码",
@@ -827,23 +824,8 @@ function renderAuthPage(title = "登录后继续", returnTo = "#home", mode = "l
         ${passwordInput("password", "密码", "至少 6 位密码")}
         ${passwordInput("confirmPassword", "确认密码", "再次输入密码")}
         <label class="auth-agreement auth-v2-agreement"><input type="checkbox" name="agreement" required /><span>我已阅读并同意<a href="#terms">《用户服务协议》</a>和<a href="#privacy">《隐私条款》</a></span></label>
-        <button class="primary-button auth-v2-submit" type="submit">发送邮箱验证码</button>
+        <button class="primary-button auth-v2-submit" type="submit">创建账号</button>
         <p class="auth-switch">已有账号？<button type="button" data-auth-screen="login">去登录</button></p>
-      </form>
-    `);
-    return;
-  }
-
-  if (mode === "register-code") {
-    const pending = state.pendingRegister || {};
-    app.innerHTML = authShell(`
-      ${titleBlock("registerCode")}
-      <form class="auth-v2-form" data-auth-form data-auth-action="register-code">
-        <input type="hidden" name="returnTo" value="${escapeHtml(pending.returnTo || safeReturnTo)}" />
-        <label class="auth-input"><span>邮箱</span><div><em>@</em><input name="email" type="email" autocomplete="email" value="${escapeHtml(pending.email || "")}" placeholder="请输入注册邮箱" required /></div></label>
-        <label class="auth-input"><span>邮箱验证码</span><div><em>#</em><input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="请输入邮箱验证码" required /></div></label>
-        <button class="primary-button auth-v2-submit" type="submit">完成注册</button>
-        <p class="auth-switch">没有收到？<button type="button" data-auth-screen="register">重新填写邮箱</button></p>
       </form>
     `);
     return;
@@ -855,7 +837,7 @@ function renderAuthPage(title = "登录后继续", returnTo = "#home", mode = "l
       <form class="auth-v2-form" data-auth-form data-auth-action="forgot">
         <input type="hidden" name="returnTo" value="${escapeHtml(safeReturnTo)}" />
         <label class="auth-input"><span>邮箱</span><div><em>@</em><input name="email" type="email" autocomplete="email" placeholder="请输入注册邮箱" required /></div></label>
-        <button class="primary-button auth-v2-submit" type="submit">发送重置邮件</button>
+        <button class="primary-button auth-v2-submit" type="submit">继续</button>
         <p class="auth-switch">想起来了？<button type="button" data-auth-screen="login">返回登录</button></p>
       </form>
     `);
@@ -869,7 +851,7 @@ function renderAuthPage(title = "登录后继续", returnTo = "#home", mode = "l
         <input type="hidden" name="returnTo" value="${escapeHtml(safeReturnTo)}" />
         ${passwordInput("password", "新密码", "请输入新密码")}
         ${passwordInput("confirmPassword", "确认新密码", "再次输入新密码")}
-        <button class="primary-button auth-v2-submit" type="submit">确认修改</button>
+        <button class="primary-button auth-v2-submit" type="submit">确认重置</button>
       </form>
     `);
     return;
@@ -943,14 +925,26 @@ function normalizeAuthEmail(value) {
   return String(value || "").trim().toLowerCase();
 }
 
+function localAccountForEmail(email) {
+  return state.accounts?.[normalizeAuthEmail(email)] || null;
+}
+
+function saveLocalAccount(email, account) {
+  const normalizedEmail = normalizeAuthEmail(email);
+  state.accounts ||= {};
+  state.accounts[normalizedEmail] = { ...account, email: normalizedEmail };
+  saveState();
+  return state.accounts[normalizedEmail];
+}
+
 function authErrorMessage(error) {
   const message = String(error?.message || "");
-  if (!message) return "认证服务暂时不可用，请稍后再试。";
-  if (/auth session missing/i.test(message)) return "重置链接已经失效或没有被正确打开，请重新发送一封重置密码邮件。";
+  if (!message) return "账号功能暂时不可用，请稍后再试。";
+  if (/auth session missing/i.test(message)) return "请先输入注册邮箱，再设置新密码。";
   if (/invalid login credentials/i.test(message)) return "邮箱或密码不正确，请重新输入。";
-  if (/email not confirmed/i.test(message)) return "请先打开邮箱里的确认邮件，再回来登录。";
+  if (/email not confirmed/i.test(message)) return "账号还不能登录，请重新注册或重置密码。";
   if (/already registered|already exists|user already/i.test(message)) return "这个邮箱已经注册，请直接登录。";
-  if (/token|otp|code/i.test(message)) return "验证码不正确或已过期，请重新发送后再试。";
+  if (/token|otp|code/i.test(message)) return "账号状态已过期，请重新操作一次。";
   if (/password/i.test(message) && /six|6|weak|short/i.test(message)) return "密码至少需要 6 位。";
   return message;
 }
@@ -1027,7 +1021,7 @@ async function syncSupabaseSession() {
 function completeAuth(account, savedAccount, returnTo) {
   const userName = savedAccount?.name || `用户${String(account).slice(-4)}` || "DMV用户";
   const role = savedAccount?.role || (String(account).toLowerCase().includes("admin") ? "admin" : "user");
-  state.session = { loggedIn: true, account, role };
+  state.session = { loggedIn: true, account, role, provider: savedAccount?.provider || "local" };
   state.user = {
     name: userName,
     subtitle: "DMV 华人租房二手",
@@ -1035,6 +1029,7 @@ function completeAuth(account, savedAccount, returnTo) {
   };
   saveState();
   location.hash = returnTo || "#home";
+  route();
 }
 
 function mobileHeader() {
@@ -1493,11 +1488,6 @@ document.addEventListener("submit", async (event) => {
     const action = authForm.dataset.authAction || "login";
     const returnTo = data.returnTo || "#home";
 
-    if (!hasSupabaseAuth()) {
-      showAuthError(authForm, "认证服务没有加载成功，请确认网络可访问 Supabase 和页面里的配置。");
-      return;
-    }
-
     if (action === "login") {
       const email = normalizeAuthEmail(data.email);
       const password = String(data.password || "");
@@ -1509,14 +1499,12 @@ document.addEventListener("submit", async (event) => {
         showAuthError(authForm, "请输入密码。");
         return;
       }
-      setAuthLoading(authForm, true, "正在登录...");
-      const { data: authData, error } = await supabaseClient.auth.signInWithPassword({ email, password });
-      setAuthLoading(authForm, false);
-      if (error) {
-        showAuthError(authForm, authErrorMessage(error));
+      const account = localAccountForEmail(email);
+      if (!account || account.password !== password) {
+        showAuthError(authForm, "邮箱或密码不正确，请重新输入。");
         return;
       }
-      completeSupabaseAuth(authData.user, returnTo);
+      completeAuth(email, account, returnTo);
       return;
     }
 
@@ -1540,55 +1528,24 @@ document.addEventListener("submit", async (event) => {
         showAuthError(authForm, "请先同意用户服务协议和隐私条款。");
         return;
       }
-      setAuthLoading(authForm, true, "正在发送...");
-      const { data: authData, error } = await supabaseClient.auth.signUp({
-        email,
+      if (localAccountForEmail(email)) {
+        showAuthError(authForm, "这个邮箱已经注册，请直接登录。");
+        return;
+      }
+      const savedAccount = saveLocalAccount(email, {
+        name: name || email.split("@")[0],
         password,
-        options: {
-          emailRedirectTo: authRedirectUrl("register-code"),
-          data: { display_name: name || email.split("@")[0] }
-        }
+        role: email.includes("admin") ? "admin" : "user"
       });
-      setAuthLoading(authForm, false);
-      if (error) {
-        showAuthError(authForm, authErrorMessage(error));
-        return;
-      }
-      if (authData.session?.user) {
-        completeSupabaseAuth(authData.session.user, returnTo);
-        return;
-      }
-      state.pendingRegister = { email, name, returnTo };
+      delete state.pendingRegister;
+      delete state.pendingResetEmail;
       saveState();
-      renderAuthPage("输入邮箱验证码", returnTo, "register-code");
+      completeAuth(email, savedAccount, returnTo);
       return;
     }
 
     if (action === "register-code") {
-      const email = normalizeAuthEmail(data.email || state.pendingRegister?.email);
-      const token = String(data.code || "").trim();
-      const returnTarget = data.returnTo || state.pendingRegister?.returnTo || returnTo;
-      if (!email) {
-        showAuthError(authForm, "请输入注册邮箱。");
-        return;
-      }
-      if (!token) {
-        showAuthError(authForm, "请输入邮箱验证码。");
-        return;
-      }
-      setAuthLoading(authForm, true, "正在验证...");
-      let result = await supabaseClient.auth.verifyOtp({ email, token, type: "signup" });
-      if (result.error) {
-        result = await supabaseClient.auth.verifyOtp({ email, token, type: "email" });
-      }
-      setAuthLoading(authForm, false);
-      if (result.error) {
-        showAuthError(authForm, authErrorMessage(result.error));
-        return;
-      }
-      delete state.pendingRegister;
-      saveState();
-      completeSupabaseAuth(result.data.user, returnTarget);
+      renderAuthPage("创建账号", returnTo, "register");
       return;
     }
 
@@ -1598,21 +1555,20 @@ document.addEventListener("submit", async (event) => {
         showAuthError(authForm, "请输入注册邮箱。");
         return;
       }
-      setAuthLoading(authForm, true, "正在发送...");
-      const { error } = await supabaseClient.auth.resetPasswordForEmail(email, {
-        redirectTo: authRedirectUrl("reset")
-      });
-      setAuthLoading(authForm, false);
-      if (error) {
-        showAuthError(authForm, authErrorMessage(error));
+      if (!localAccountForEmail(email)) {
+        showAuthError(authForm, "这个邮箱还没有注册，请先创建账号。");
         return;
       }
-      renderAuthNotice("重置邮件已发送", "请打开邮箱里的链接，然后在打开的页面设置新密码。", returnTo);
+      state.pendingResetEmail = email;
+      state.pendingResetReturnTo = returnTo;
+      saveState();
+      renderAuthPage("设置新密码", returnTo, "reset");
       return;
     }
 
     if (action === "reset") {
       const password = String(data.password || "");
+      const email = state.pendingResetEmail;
       if (password.length < 6) {
         showAuthError(authForm, "新密码至少需要 6 位。");
         return;
@@ -1621,20 +1577,14 @@ document.addEventListener("submit", async (event) => {
         showAuthError(authForm, "两次输入的新密码不一致。");
         return;
       }
-      setAuthLoading(authForm, true, "正在修改...");
-      const hasRecoverySession = await ensureRecoverySession();
-      if (!hasRecoverySession && isPasswordRecoveryHash()) {
-        setAuthLoading(authForm, false);
-        showAuthError(authForm, "重置链接已经失效或没有被正确打开，请重新发送一封重置密码邮件。");
+      const account = localAccountForEmail(email);
+      if (!email || !account) {
+        showAuthError(authForm, "请先输入注册邮箱，再设置新密码。");
         return;
       }
-      const { error } = await supabaseClient.auth.updateUser({ password });
-      setAuthLoading(authForm, false);
-      if (error) {
-        showAuthError(authForm, authErrorMessage(error));
-        return;
-      }
-      await supabaseClient.auth.signOut();
+      saveLocalAccount(email, { ...account, password });
+      delete state.pendingResetEmail;
+      delete state.pendingResetReturnTo;
       state.session = { loggedIn: false };
       saveState();
       renderAuthPage("修改成功", returnTo, "success");
@@ -1817,7 +1767,7 @@ if (hasSupabaseAuth()) {
     if (event === "SIGNED_IN" && session?.user && !isLoggedIn()) {
       completeSupabaseAuth(session.user, "#home");
     }
-    if (event === "SIGNED_OUT") {
+    if (event === "SIGNED_OUT" && state.session?.provider === "supabase") {
       state.session = { loggedIn: false };
       saveState();
       if (!location.hash.startsWith("#auth")) route();
@@ -1826,8 +1776,6 @@ if (hasSupabaseAuth()) {
 }
 
 window.addEventListener("hashchange", route);
-window.addEventListener("DOMContentLoaded", async () => {
-  await syncSupabaseSession();
-  if (isPasswordRecoveryHash()) return;
+window.addEventListener("DOMContentLoaded", () => {
   route();
 });
